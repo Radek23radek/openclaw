@@ -3,33 +3,10 @@
 //
 // memory_search tool: exposes FtsStore to the agent for cross-session recall.
 
-import path from "node:path";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { FtsStore, type SearchResult } from "../memory/fts-store.js";
-
-// Singleton FtsStore per workspace path, closed on process exit.
-const _stores = new Map<string, FtsStore>();
-
-function getOrOpenStore(workspaceDir: string): FtsStore {
-  const dbPath = path.join(workspaceDir, "state.db");
-  let store = _stores.get(dbPath);
-  if (!store) {
-    store = FtsStore.open(dbPath);
-    _stores.set(dbPath, store);
-  }
-  return store;
-}
-
-process.on("exit", () => {
-  for (const store of _stores.values()) {
-    try {
-      store.close();
-    } catch {
-      // best-effort on exit
-    }
-  }
-});
+import { getOrOpenFtsStore } from "../memory/fts-store-cache.js";
+import { type SearchResult } from "../memory/fts-store.js";
 
 export type MemorySearchParams = {
   query: string;
@@ -86,7 +63,7 @@ export function memorySearch(
   agentId: string,
 ): MemorySearchResult {
   const workspaceDir = resolveAgentWorkspaceDir(config, agentId);
-  const store = getOrOpenStore(workspaceDir);
+  const store = getOrOpenFtsStore(workspaceDir);
 
   const raw: SearchResult[] = store.search(params.query, {
     sessionId: params.sessionId,
