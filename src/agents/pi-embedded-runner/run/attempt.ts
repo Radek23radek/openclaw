@@ -255,6 +255,7 @@ import {
   truncateOversizedToolResultsInSessionManager,
 } from "../tool-result-truncation.js";
 import { splitSdkTools } from "../tool-split.js";
+import { persistTurnMessagesToFts } from "../turn-fts-persistence.js";
 import { mapThinkingLevel } from "../utils.js";
 import { flushPendingToolResultsAfterIdle } from "../wait-for-idle-before-flush.js";
 import { abortable as abortableWithSignal } from "./abortable.js";
@@ -3783,6 +3784,13 @@ export async function runEmbeddedAttempt(
             sessionManager,
             config: params.config,
             warn: (message) => log.warn(message),
+          });
+          persistTurnMessagesToFts({
+            sessionId: sessionIdUsed,
+            agentId: sessionAgentId,
+            config: params.config,
+            messagesSnapshot,
+            prePromptMessageCount: contextEngineAfterTurnCheckpoint ?? prePromptMessageCount,
           });
         }
 
