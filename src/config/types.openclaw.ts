@@ -147,6 +147,8 @@ export type LearningConfig = {
   maxReviewMessages?: number;
   /** Minimum assistant messages in the turn before a review is triggered. Default: 1. */
   minAssistantMessages?: number;
+  /** Fire interval-based review every N turns (off when undefined). Default: 5. */
+  nudgeInterval?: number;
 };
 
 declare const openClawConfigStateBrand: unique symbol;
