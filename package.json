@@ -1775,7 +1775,8 @@
     "web-tree-sitter": "0.26.8",
     "ws": "8.20.0",
     "yaml": "2.9.0",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "better-sqlite3": "12.9.0"
   },
   "devDependencies": {
     "@a2ui/lit": "0.9.3",
@@ -1801,7 +1802,8 @@
     "tsx": "4.21.0",
     "typescript": "6.0.3",
     "unrun": "0.3.0",
-    "vitest": "4.1.6"
+    "vitest": "4.1.6",
+    "@types/better-sqlite3": "^7.6.0"
   },
   "optionalDependencies": {
     "sqlite-vec": "0.1.9"

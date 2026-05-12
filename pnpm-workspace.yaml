@@ -7,6 +7,12 @@ packages:
 minimumReleaseAge: 2880
 
 minimumReleaseAgeExclude:
+  - "better-sqlite3"
+  - "yaml"
+  - "playwright"
+  - "@vitest/browser-playwright"
+  - "vitest"
+  - "@vitest/*"
   - "acpx"
   - "tokenjuice"
   - "@agentclientprotocol/sdk"
@@ -33,6 +39,7 @@ minimumReleaseAgeExclude:
   - "sqlite-vec"
   - "sqlite-vec-*"
 
+blockExoticSubdeps: false
 nodeLinker: hoisted
 
 overrides:
@@ -63,6 +70,7 @@ overrides:
   uuid: 14.0.0
 
 allowBuilds:
+  "better-sqlite3": true
   "@openclaw/fs-safe": true
   "@google/genai": true
   "@lydell/node-pty": true
