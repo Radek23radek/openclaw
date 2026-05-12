@@ -136,6 +136,17 @@ export type OpenClawConfig = {
   mcp?: McpConfig;
   /** Network-level SSRF protection via an operator-managed forward proxy. */
   proxy?: ProxyConfig;
+  /** Self-improvement: post-turn skill learning via background review. */
+  learning?: LearningConfig;
+};
+
+export type LearningConfig = {
+  /** Enable background skill-learning review after each agent turn. Default: false. */
+  enabled?: boolean;
+  /** Maximum recent messages to include in the review context. Default: 40. */
+  maxReviewMessages?: number;
+  /** Minimum assistant messages in the turn before a review is triggered. Default: 1. */
+  minAssistantMessages?: number;
 };
 
 declare const openClawConfigStateBrand: unique symbol;
