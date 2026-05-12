@@ -6,6 +6,13 @@
 //
 // Called from attempt.ts after finalizeAttemptContextEngineTurn — strictly
 // best-effort: a write failure logs a warning but never fails the turn.
+//
+// Concurrency: runEmbeddedPiAgent runs inside enqueueSession() (run.ts), which
+// is a strict FIFO lane per sessionKey. Two turns in the same session can never
+// race here — prePromptMessageCount advances under that serial guarantee. Turns
+// in *different* sessions run in parallel but write to different session_id
+// rows; better-sqlite3 is synchronous within the process so the writes
+// interleave but never tear.
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -29,7 +36,28 @@ export type PersistTurnMessagesParams = {
 
 type TextRole = "user" | "assistant" | "tool";
 
-const KEEP_ROLES: ReadonlySet<TextRole> = new Set(["user", "assistant"]);
+const KEEP_ROLES: ReadonlySet<TextRole> = new Set(["user", "assistant", "tool"]);
+
+// Head+tail cap for non-user content so a single huge tool output doesn't
+// blow up the FTS table. User messages are kept 1:1 — they're typed by humans
+// and never huge in practice.
+const TRUNCATE_THRESHOLD_BYTES = 131_072; // 128 KiB
+const HEAD_KEEP_BYTES = 32_768; // 32 KiB
+const TAIL_KEEP_BYTES = 8_192; // 8 KiB
+
+function truncateForFts(content: string): string {
+  const originalSize = Buffer.byteLength(content, "utf8");
+  if (originalSize <= TRUNCATE_THRESHOLD_BYTES) {
+    return content;
+  }
+  const buf = Buffer.from(content, "utf8");
+  // toString("utf8") replaces partial multibyte sequences at slice boundaries
+  // with U+FFFD — acceptable for FTS indexing.
+  const head = buf.subarray(0, HEAD_KEEP_BYTES).toString("utf8");
+  const tail = buf.subarray(buf.length - TAIL_KEEP_BYTES).toString("utf8");
+  const droppedBytes = originalSize - HEAD_KEEP_BYTES - TAIL_KEEP_BYTES;
+  return `${head}\n\n…[FTS_TRUNCATED bytes=${droppedBytes} original_size=${originalSize}]…\n\n${tail}`;
+}
 
 function extractText(content: AgentMessage["content"]): string {
   if (typeof content === "string") {
@@ -83,9 +111,10 @@ export function persistTurnMessagesToFts(params: PersistTurnMessagesParams): num
     for (const msg of newMessages) {
       const role = toInsertableRole(msg.role);
       if (!role) continue;
-      const content = extractText(msg.content);
-      if (!content) continue;
+      const rawContent = extractText(msg.content);
+      if (!rawContent) continue;
 
+      const content = role === "user" ? rawContent : truncateForFts(rawContent);
       store.insertMessage({
         sessionId: params.sessionId,
         role,
