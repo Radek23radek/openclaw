@@ -204,6 +204,7 @@ import {
 } from "../extra-params.js";
 import { prepareGooglePromptCacheStreamFn } from "../google-prompt-cache.js";
 import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "../history.js";
+import { scheduleLearningReviewIfDue } from "../learning-review-trigger.js";
 import { log } from "../logger.js";
 import { buildEmbeddedMessageActionDiscoveryInput } from "../message-action-discovery-input.js";
 import {
@@ -3791,6 +3792,16 @@ export async function runEmbeddedAttempt(
             config: params.config,
             messagesSnapshot,
             prePromptMessageCount: contextEngineAfterTurnCheckpoint ?? prePromptMessageCount,
+          });
+          scheduleLearningReviewIfDue({
+            sessionKey: params.sessionKey ?? sessionIdUsed,
+            agentId: sessionAgentId,
+            config: params.config,
+            messagesSnapshot,
+            prePromptMessageCount: contextEngineAfterTurnCheckpoint ?? prePromptMessageCount,
+            reviewFn: async () => {
+              // No-op review until KROK 4.3 wires the real LLM call.
+            },
           });
         }
 
