@@ -31,7 +31,7 @@ Branch: `main` (10 commitów ponad `origin/main` — nic nie pushowane)
 - `noTools: "builtin"` + `skill_manage` jako `customTool` (sandbox)
 - Pre-flight `getApiKeyForModel`
 - Guardrails G1-G10 (max 3 skille/review, dedup, content cap, timeout 60s, model name validation, zero-throw)
-- OAuth token refresh retry (1 retry max — przy expired access token)
+- ~~OAuth token refresh retry (1 retry max — przy expired access token)~~ **SKIPPED w pod-kroku b.4** — pi-coding-agent obsługuje natywnie (auto-refresh w `AuthStorage.getApiKey()` + file-level locking + `auto_retry_*` events dla retryable). Zob. PORT_PLAN_4_3.md "Discoveries".
 - Resolve `learning.reviewModel`: `"auto"` (default) → parent's model, lub `"<provider>/<model_id>"`
 
 **4.3.c**: Cooldown state w trigger module (update Step 4.2)

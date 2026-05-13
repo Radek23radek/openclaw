@@ -334,11 +334,15 @@ export async function runSkillReview(
 
     // NOTE: authStorage left to default — resolves to agentDir/auth.json.
     // Parent agent has its own AuthStorage instance on the same file.
-    // In b.2 (read-only auth resolve): safe, both instances read.
-    // In b.4 (OAuth refresh): MUST share authStorage explicitly to avoid
-    //   race-write when refreshing tokens. See TODO 4.3.b.4 / TODO 4.3.c.
-    // See also: compact.ts uses explicit authStorage from parent state —
-    //   review is intentionally isolated (in-memory session + tmpdir cwd).
+    // SAFE for multi-instance access: AuthStorage uses file-level locking
+    // (pi-coding-agent dist/core/auth-storage.d.ts:5 —
+    //  "Uses file locking to prevent race conditions when multiple pi instances").
+    // OAuth refresh is handled internally by pi-coding-agent via
+    // refreshOAuthTokenWithLock (auto-refresh on getApiKey() call).
+    // Retryable errors (overloaded/rate-limit/5xx) auto-retried with
+    // auto_retry_start/auto_retry_end events.
+    // Auth errors that ARE NOT retryable propagate as exceptions →
+    // caught by G7 outer try/catch in runSkillReview → EMPTY_REVIEW_RESULT.
     const { session } = await createAgentSession({
       cwd: tmpdir(),
       agentDir: context.agentDir,
