@@ -149,6 +149,13 @@ export type LearningConfig = {
   minAssistantMessages?: number;
   /** Fire interval-based review every N turns (off when undefined). Default: 5. */
   nudgeInterval?: number;
+  /**
+   * Model for the review fork.
+   * - "auto" (default): inherits the parent agent's model and credentials.
+   * - "<provider>/<model_id>": explicit override (e.g. "anthropic/claude-opus-4-7").
+   * Invalid values fall back to "auto" with a warning.
+   */
+  reviewModel?: string;
 };
 
 declare const openClawConfigStateBrand: unique symbol;
