@@ -1,18 +1,34 @@
 // Originally from Nous Research Hermes Agent (MIT License).
 // See LICENSE-hermes for full attribution.
-// Adapted for OpenClaw: single-fork via createAgentSession, max_iterations=4.
+// Adapted for OpenClaw: single-fork via createAgentSession; G1 (max 3
+// skill mutations per review) enforced inside the skill_manage tool
+// callback because pi-coding-agent has no native max-iterations option.
 //
-// Step 4.3.b.1 — skeleton only. Resolves the review model, performs a
-// pre-flight auth check, and returns EMPTY_REVIEW_RESULT. The real
-// createAgentSession wiring lands in 4.3.b.2; guardrails in 4.3.b.3;
-// OAuth retry in 4.3.b.4; usage telemetry in 4.3.b.5.
+// Step 4.3.b.2 — wires createAgentSession with sandboxed tools
+// (noTools:"builtin" + skill_manage as the only customTool) and a
+// 60s Promise.race fail-safe (G5). Remaining guardrails land in 4.3.b.3,
+// OAuth retry in 4.3.b.4, usage telemetry in 4.3.b.5.
 
+import { tmpdir } from "node:os";
 import { type Api, type Model } from "@earendil-works/pi-ai";
+import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getApiKeyForModel } from "../model-auth.js";
+import { toToolDefinitions } from "../pi-tool-definition-adapter.js";
+import type { AnyAgentTool } from "../tools/common.js";
+import { jsonResult } from "../tools/common.js";
 import type { LearningMessage } from "./learning-review.js";
 import { log } from "./logger.js";
-import { EMPTY_REVIEW_RESULT, type ReviewResult } from "./skill-review-types.js";
+import {
+  executeSkillReviewAction,
+  SkillReviewToolParamsSchema,
+  type SkillReviewToolParams,
+} from "./skill-review-tool.js";
+import {
+  EMPTY_REVIEW_RESULT,
+  type ReviewActionLog,
+  type ReviewResult,
+} from "./skill-review-types.js";
 
 /**
  * Hermes _SKILL_REVIEW_PROMPT — verbatim. Inlined as a template literal so
@@ -153,26 +169,104 @@ export function resolveReviewModel(
   if (value === "auto") {
     return parentModel;
   }
-  // Custom override "<provider>/<id>" lands in 4.3.b.2 once createAgentSession
-  // wiring needs it. For 4.3.b.1 we treat any non-"auto" value as not-yet-
-  // supported and let the caller skip with a warn.
+  // Custom override "<provider>/<id>" requires modelRegistry lookup; that
+  // ships in a follow-up step (Etap 5 — see RESUME.md). For now any non-"auto"
+  // value warns and falls back to the parent's model so the review still runs.
   log.warn(
-    `[skill-review] reviewModel="${value}" not yet supported in 4.3.b.1 — falling back to parent's model`,
+    `[skill-review] reviewModel="${value}" override not yet supported — falling back to parent's model`,
   );
   return parentModel;
+}
+
+/** G1: hard cap on the number of skill mutations a single review may apply. */
+const MAX_SKILLS_PER_REVIEW = 3;
+/** G5: hard cap on review wall-clock duration. */
+const REVIEW_TIMEOUT_MS = 60_000;
+
+function formatMessagesAsPromptText(messages: LearningMessage[], reviewPrompt: string): string {
+  const transcript = messages.map((m) => `<${m.role}>\n${m.content}\n</${m.role}>`).join("\n\n");
+  return `${transcript}\n\n${reviewPrompt}`;
+}
+
+function aggregateReviewResult(actionsLog: ReviewActionLog[], textOutput: string): ReviewResult {
+  let skillsCreated = 0;
+  let skillsUpdated = 0;
+  let skillsDeleted = 0;
+  let skipped = 0;
+  for (const entry of actionsLog) {
+    switch (entry.result) {
+      case "created":
+        skillsCreated += 1;
+        break;
+      case "updated":
+        skillsUpdated += 1;
+        break;
+      case "deleted":
+        skillsDeleted += 1;
+        break;
+      case "skipped":
+        skipped += 1;
+        break;
+    }
+  }
+  return { skillsCreated, skillsUpdated, skillsDeleted, skipped, textOutput, actionsLog };
+}
+
+/**
+ * Build the stateful skill_manage tool the review fork sees. Wraps the
+ * pure executeSkillReviewAction (4.3.a) with a closure-shared counter so
+ * G1 (max 3 mutations per review) is enforced even though pi-coding-agent
+ * has no native iteration limit. The 4th+ tool_use returns "skipped" and
+ * the model decides whether to stop on its own.
+ */
+function buildReviewToolWithCap(
+  actionsLog: ReviewActionLog[],
+  state: { mutationCount: number },
+): AnyAgentTool {
+  return {
+    name: "skill_manage",
+    label: "Skill manager",
+    description:
+      "Create, update, or delete an entry in the user's skill library. Use sparingly — only durable, class-level lessons belong here. Returns JSON with the outcome.",
+    parameters: SkillReviewToolParamsSchema,
+    execute: async (_toolCallId, rawParams) => {
+      const params = rawParams as SkillReviewToolParams;
+      state.mutationCount += 1;
+      if (state.mutationCount > MAX_SKILLS_PER_REVIEW) {
+        const entry: ReviewActionLog = {
+          action: params.action ?? "unknown",
+          name: params.name ?? "",
+          result: "skipped",
+          reason: "max_skills_per_review_exceeded",
+        };
+        actionsLog.push(entry);
+        return jsonResult(entry);
+      }
+      const outcome = executeSkillReviewAction(params);
+      actionsLog.push(outcome);
+      return jsonResult(outcome);
+    },
+  };
 }
 
 /**
  * Run one post-turn skill-learning review.
  *
- * Step 4.3.b.1 contract: resolve the review model, perform a pre-flight
- * auth check, and return EMPTY_REVIEW_RESULT. Never throws (G7). The real
- * LLM call lands in 4.3.b.2.
+ * 4.3.b.2: forks an isolated AgentSession (in-memory SessionManager,
+ * tmpdir cwd, noTools:"builtin", skill_manage as the only customTool),
+ * lets the model loop tool-use until it stops, and returns the aggregated
+ * outcome. G1 capped via the tool callback; G5 via Promise.race timeout.
+ * G7: never throws — any failure logs and returns EMPTY_REVIEW_RESULT.
+ *
+ * Note: pi-coding-agent's AgentSession.prompt() has no AbortSignal in
+ * PromptOptions, so the timeout uses Promise.race. The losing prompt
+ * call may keep running in the background of an isolated session, but
+ * its side effects are confined to the closure-scoped actionsLog.
  */
 export async function runSkillReview(
-  _messages: LearningMessage[],
+  messages: LearningMessage[],
   context: SkillReviewContext,
-  _deps?: SkillReviewDeps,
+  deps?: SkillReviewDeps,
 ): Promise<ReviewResult> {
   try {
     const model = resolveReviewModel(context.config.learning?.reviewModel, context.parentModel);
@@ -197,8 +291,60 @@ export async function runSkillReview(
       return EMPTY_REVIEW_RESULT;
     }
 
-    // 4.3.b.2 will replace this stub with createAgentSession + tool loop.
-    return EMPTY_REVIEW_RESULT;
+    const actionsLog: ReviewActionLog[] = [];
+    const counterState = { mutationCount: 0 };
+    const reviewTool = buildReviewToolWithCap(actionsLog, counterState);
+
+    // NOTE: authStorage left to default — resolves to agentDir/auth.json.
+    // Parent agent has its own AuthStorage instance on the same file.
+    // In b.2 (read-only auth resolve): safe, both instances read.
+    // In b.4 (OAuth refresh): MUST share authStorage explicitly to avoid
+    //   race-write when refreshing tokens. See TODO 4.3.b.4 / TODO 4.3.c.
+    // See also: compact.ts uses explicit authStorage from parent state —
+    //   review is intentionally isolated (in-memory session + tmpdir cwd).
+    const { session } = await createAgentSession({
+      cwd: tmpdir(),
+      agentDir: context.agentDir,
+      model,
+      customTools: toToolDefinitions([reviewTool]),
+      sessionManager: SessionManager.inMemory(),
+      noTools: "builtin",
+    });
+
+    const promptText = formatMessagesAsPromptText(
+      messages,
+      deps?.promptOverride ?? SKILL_REVIEW_PROMPT,
+    );
+
+    // G5: Promise.race fail-safe. PromptOptions has no signal field, so we
+    // can't propagate context.signal directly into prompt(). The race covers
+    // both the wall-clock timeout and the caller's optional cancel signal.
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error(`review timeout after ${REVIEW_TIMEOUT_MS}ms`)),
+        REVIEW_TIMEOUT_MS,
+      );
+    });
+    const cancelPromise = context.signal
+      ? new Promise<never>((_, reject) => {
+          const onAbort = () => reject(new Error("review aborted by caller"));
+          if (context.signal!.aborted) onAbort();
+          else context.signal!.addEventListener("abort", onAbort, { once: true });
+        })
+      : null;
+
+    try {
+      const racers: Array<Promise<unknown>> = [session.prompt(promptText), timeoutPromise];
+      if (cancelPromise) racers.push(cancelPromise);
+      await Promise.race(racers);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+
+    // textOutput (final assistant text, e.g. "Nothing to save.") and token
+    // usage land in 4.3.b.5 once the event-listener wiring is in place.
+    return aggregateReviewResult(actionsLog, "");
   } catch (err) {
     // G7: never let the review crash the caller.
     log.warn(`[skill-review] unexpected failure: ${String(err)}`);
