@@ -45,7 +45,7 @@ function isLearningEnabled(config: OpenClawConfig): boolean {
 }
 
 function hasToolUseBlock(msg: AgentMessage): boolean {
-  if (!Array.isArray(msg.content)) return false;
+  if (!("content" in msg) || !Array.isArray(msg.content)) return false;
   return msg.content.some((block) => {
     if (!block || typeof block !== "object") return false;
     return (block as { type?: unknown }).type === "tool_use";
@@ -72,7 +72,7 @@ function isNaturalBreak(turnMessages: AgentMessage[]): boolean {
   return earlierWork;
 }
 
-function extractTextContent(content: AgentMessage["content"]): string {
+function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
