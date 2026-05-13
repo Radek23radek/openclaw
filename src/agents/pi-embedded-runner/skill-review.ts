@@ -8,10 +8,14 @@
 // (noTools:"builtin" + skill_manage as the only customTool) and a
 // 60s Promise.race fail-safe (G5).
 // Step 4.3.b.3 — adds G3 (dedup per-name within a review) and G8
-// (model spec regex validation). OAuth retry in 4.3.b.4, usage
-// telemetry in 4.3.b.5.
+// (model spec regex validation).
+// Step 4.3.b.4 SKIPPED — pi-coding-agent native OAuth refresh + retry
+// (see PORT_PLAN_4_3.md "Discoveries").
+// Step 4.3.b.5 — telemetry: tokensIn/tokensOut aggregated from
+// session.messages assistant variants, plus a single complete log line.
 
 import { tmpdir } from "node:os";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Api, type Model } from "@earendil-works/pi-ai";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -201,7 +205,11 @@ function formatMessagesAsPromptText(messages: LearningMessage[], reviewPrompt: s
   return `${transcript}\n\n${reviewPrompt}`;
 }
 
-function aggregateReviewResult(actionsLog: ReviewActionLog[], textOutput: string): ReviewResult {
+function aggregateReviewResult(
+  actionsLog: ReviewActionLog[],
+  textOutput: string,
+  usage: { tokensIn: number; tokensOut: number },
+): ReviewResult {
   let skillsCreated = 0;
   let skillsUpdated = 0;
   let skillsDeleted = 0;
@@ -222,7 +230,35 @@ function aggregateReviewResult(actionsLog: ReviewActionLog[], textOutput: string
         break;
     }
   }
-  return { skillsCreated, skillsUpdated, skillsDeleted, skipped, textOutput, actionsLog };
+  return {
+    skillsCreated,
+    skillsUpdated,
+    skillsDeleted,
+    skipped,
+    textOutput,
+    tokensIn: usage.tokensIn,
+    tokensOut: usage.tokensOut,
+    actionsLog,
+  };
+}
+
+/**
+ * Sum input/output tokens across every assistant message in the session.
+ * Each AssistantMessage from pi-ai carries a `usage: Usage` field; non-
+ * assistant variants (user, toolResult, custom) are skipped. Returns zeros
+ * when no usage info is available (e.g. timeout before first response).
+ */
+function aggregateUsage(messages: AgentMessage[]): { tokensIn: number; tokensOut: number } {
+  let tokensIn = 0;
+  let tokensOut = 0;
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    const usage = (m as { usage?: { input?: number; output?: number } }).usage;
+    if (!usage) continue;
+    if (typeof usage.input === "number") tokensIn += usage.input;
+    if (typeof usage.output === "number") tokensOut += usage.output;
+  }
+  return { tokensIn, tokensOut };
 }
 
 /**
@@ -304,6 +340,8 @@ export async function runSkillReview(
   context: SkillReviewContext,
   deps?: SkillReviewDeps,
 ): Promise<ReviewResult> {
+  const now = deps?.now ?? Date.now;
+  const startedAt = now();
   try {
     const model = resolveReviewModel(context.config.learning?.reviewModel, context.parentModel);
     if (!model) {
@@ -383,9 +421,15 @@ export async function runSkillReview(
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
 
-    // textOutput (final assistant text, e.g. "Nothing to save.") and token
-    // usage land in 4.3.b.5 once the event-listener wiring is in place.
-    return aggregateReviewResult(actionsLog, "");
+    // textOutput (final assistant text, e.g. "Nothing to save.") still
+    // pending; would require an event listener on message_end to capture
+    // the model's free-form reply. Deferred to Etap 5.
+    const usage = aggregateUsage(session.messages);
+    const durationMs = now() - startedAt;
+    log.info(
+      `[skill-review] complete model=${model.id} durationMs=${durationMs} tokensIn=${usage.tokensIn} tokensOut=${usage.tokensOut} actions=${actionsLog.length}`,
+    );
+    return aggregateReviewResult(actionsLog, "", usage);
   } catch (err) {
     // G7: never let the review crash the caller.
     log.warn(`[skill-review] unexpected failure: ${String(err)}`);
