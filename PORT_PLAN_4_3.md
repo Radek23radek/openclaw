@@ -670,3 +670,40 @@ src/agents/pi-embedded-runner/run/attempt.ts
 **Pierwszy krok kodowania po twojej akceptacji**: nowy plik `prompts/skill-review-prompt.md` (czysty markdown z attribution header), potem `runSkillReview` szkielet bez LLM impl, potem testy z mockami, potem `defaultAnthropicLlmCall`, potem wiring w `attempt.ts`.
 
 Czekam na decyzje na 7 pytań powyżej.
+
+---
+
+## Discoveries during implementation
+
+### b.4 SKIPPED — pi-coding-agent native OAuth/retry handling
+
+Original plan: implement OAuth refresh retry logic (1 retry max) inside `runSkillReview`.
+
+Discovered during pre-implementation recon (R2):
+
+- `AuthStorage.getApiKey()` auto-refreshes expired OAuth tokens
+  (`pi-coding-agent dist/core/auth-storage.d.ts:125-135` — JSDoc priority list
+  step 3: _"OAuth token from auth.json (auto-refreshed with locking)"_; private
+  `refreshOAuthTokenWithLock` handles the actual refresh).
+- File-level locking handles multi-instance safety
+  (`auth-storage.d.ts:5` header — _"Uses file locking to prevent race conditions
+  when multiple pi instances"_). No need to share an `AuthStorage` instance
+  with the parent agent — two instances on the same `auth.json` coordinate
+  via fs locks.
+- `AgentSession` has internal retry for retryable errors
+  (`agent-session.d.ts:477-478` — _"Check if an error is retryable
+  (overloaded, rate limit, server errors). Context overflow errors are NOT
+  retryable"_) emitted via `auto_retry_start`/`auto_retry_end` events.
+- Non-retryable auth errors propagate as exceptions and are caught by the
+  G7 outer `try/catch` in `runSkillReview` → `EMPTY_REVIEW_RESULT`.
+
+**Decision**: SKIP b.4. Our planned retry layer would duplicate native
+behavior and risk a race between two retry mechanisms (e.g. our retry
+recreates the session while pi-coding-agent's retry is mid-attempt).
+
+Updated b.2 R-auth comment to reflect this discovery.
+
+### Future telemetry (Etap 5, not 4.3)
+
+Subscribe to `auto_retry_start`/`auto_retry_end` events for resilience
+observability — separate from b.5 cost telemetry (`tokensIn`/`tokensOut`).
