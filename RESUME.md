@@ -1,5 +1,41 @@
 # Stan projektu — pauza 2026-05-12
 
+## Stan pauzy 2026-05-14
+
+**4.3.b CAŁY ZAMKNIĘTY** — 6 commitów + udokumentowany SKIP b.4:
+
+- `9b1f86d5f6` b.1 — runSkillReview szkielet + reviewModel config
+- `d1b9da3722` pre-b.2 — narrow AgentMessage union (3 z 8 preexisting TS errors)
+- `94898e409c` b.2 — createAgentSession + sandbox + customTools (G1 cap, G5 timeout)
+- `d9bcfd53ec` b.3 — G3 dedup names + G8 model spec regex
+- `eb40fbd1f3` b.4 SKIP — pi-coding-agent native OAuth refresh + retry (R2 discovery)
+- `c62de67205` b.5 — telemetria tokensIn/tokensOut + complete log line
+
+**Następny krok**: **4.3.c** — zacząć od **KROK 0 propozycja struktury** (recon przed kodem, wzorem 4.3.b). Scope 4.3.c:
+
+- G4 cooldown state w trigger module (callback z review → counter w `learning-review-trigger.ts`)
+- Wpięcie real `runSkillReview` do `attempt.ts:3796` (zamiast no-op)
+- Fix 4 preexisting TS errors (`attempt.ts:3792,3799` `OpenClawConfig | undefined`, `turn-fts-persistence.ts:62,114` `BashExecutionMessage` content access)
+- Fix flaky `learning-review-trigger.test.ts:225` (timing 1ms off — `vi.useFakeTimers()` lub `>=` zamiast `>= +10`)
+
+**Status guardraili po 4.3.b**: 9/10 done. G4 → 4.3.c.
+
+**Push do remote**: TODO jutro. `origin` wskazuje na upstream `https://github.com/openclaw/openclaw` — potrzebny personal fork (np. `git remote add fork <my-fork-url>` + `git push fork main`). 13 commitów lokalnych ahead of origin/main, drzewo czyste, bezpieczne lokalnie.
+
+**Ostatni commit**: `c62de67205 feat(learning): telemetry — tokensIn/tokensOut + complete log (Step 4.3.b.5)`
+
+**TODO Etap 5** (zebrane podczas 4.3.b):
+
+- `auto_retry_start`/`auto_retry_end` events telemetry (resilience observability — osobno od cost telemetry)
+- `textOutput` extraction (event listener on `message_end`)
+- Native `AgentSession.abort()` może zastąpić nasz Promise.race
+- Custom `reviewModel` override (`<provider>/<id>` lookup w modelRegistry)
+- `cost.total` z `Usage` do log line (nie tylko tokens)
+
+Wszystkie pozostałe pre-existing TODO 4.3.c punkty zachowane w sekcjach poniżej.
+
+---
+
 ## Gdzie jestem
 
 Etap 4.3 (real reviewFn) — krok **4.3.a UKOŃCZONY i scommitowany**.
