@@ -6,8 +6,10 @@
 //
 // Step 4.3.b.2 — wires createAgentSession with sandboxed tools
 // (noTools:"builtin" + skill_manage as the only customTool) and a
-// 60s Promise.race fail-safe (G5). Remaining guardrails land in 4.3.b.3,
-// OAuth retry in 4.3.b.4, usage telemetry in 4.3.b.5.
+// 60s Promise.race fail-safe (G5).
+// Step 4.3.b.3 — adds G3 (dedup per-name within a review) and G8
+// (model spec regex validation). OAuth retry in 4.3.b.4, usage
+// telemetry in 4.3.b.5.
 
 import { tmpdir } from "node:os";
 import { type Api, type Model } from "@earendil-works/pi-ai";
@@ -152,14 +154,19 @@ export type SkillReviewDeps = {
   now?: () => number;
 };
 
+/** G8: format check for learning.reviewModel — "<provider>/<model_id>". */
+const REVIEW_MODEL_SPEC_REGEX = /^[a-z][a-z0-9-]*\/[a-z][a-z0-9.-]*$/;
+
 /**
  * Resolve a learning.reviewModel spec to a concrete Model<Api>.
  *
  * - "auto" (or undefined) → parent's model
- * - "<provider>/<id>" → custom override (NOT YET IMPLEMENTED — 4.3.b.2)
- * - anything else → null (caller logs warn + skips)
+ * - "<provider>/<id>" matching G8 regex → fallback to parentModel + warn
+ *   (full custom-override support ships in Etap 5 via modelRegistry lookup)
+ * - malformed string → fallback to parentModel + warn
  *
- * Returns null on invalid spec; caller treats null as a graceful skip.
+ * Always returns a Model<Api> in 4.3 (parentModel is the safe default).
+ * Returns null only as a future-proof escape hatch for unrecoverable cases.
  */
 export function resolveReviewModel(
   spec: string | undefined,
@@ -169,11 +176,17 @@ export function resolveReviewModel(
   if (value === "auto") {
     return parentModel;
   }
+  if (!REVIEW_MODEL_SPEC_REGEX.test(value)) {
+    log.warn(
+      `[skill-review] reviewModel="${value}" invalid format — expected "<provider>/<model>" — falling back to parent's model`,
+    );
+    return parentModel;
+  }
   // Custom override "<provider>/<id>" requires modelRegistry lookup; that
   // ships in a follow-up step (Etap 5 — see RESUME.md). For now any non-"auto"
   // value warns and falls back to the parent's model so the review still runs.
   log.warn(
-    `[skill-review] reviewModel="${value}" override not yet supported — falling back to parent's model`,
+    `[skill-review] reviewModel="${value}" override not yet supported in 4.3 — falling back to parent's model`,
   );
   return parentModel;
 }
@@ -214,14 +227,16 @@ function aggregateReviewResult(actionsLog: ReviewActionLog[], textOutput: string
 
 /**
  * Build the stateful skill_manage tool the review fork sees. Wraps the
- * pure executeSkillReviewAction (4.3.a) with a closure-shared counter so
- * G1 (max 3 mutations per review) is enforced even though pi-coding-agent
- * has no native iteration limit. The 4th+ tool_use returns "skipped" and
- * the model decides whether to stop on its own.
+ * pure executeSkillReviewAction (4.3.a) with closure-shared state so:
+ *   - G1 (max 3 mutations per review) is enforced via mutationCount;
+ *   - G3 (per-name dedup) is enforced via processedNames Set;
+ * pi-coding-agent has no native iteration limit. Skipped tool_uses return
+ * a structured result and the model decides whether to stop on its own.
  */
 function buildReviewToolWithCap(
   actionsLog: ReviewActionLog[],
   state: { mutationCount: number },
+  processedNames: Set<string>,
 ): AnyAgentTool {
   return {
     name: "skill_manage",
@@ -231,17 +246,38 @@ function buildReviewToolWithCap(
     parameters: SkillReviewToolParamsSchema,
     execute: async (_toolCallId, rawParams) => {
       const params = rawParams as SkillReviewToolParams;
+      const name = params.name?.trim() ?? "";
+
+      // G3: dedup per-name within a single review. Hermes prompt has the
+      // model pick ONE action (create/update/delete) per skill name; a
+      // second tool_use on the same name is a contradiction we skip.
+      if (name && processedNames.has(name)) {
+        const entry: ReviewActionLog = {
+          action: params.action ?? "unknown",
+          name,
+          result: "skipped",
+          reason: "duplicate_name_in_review",
+        };
+        actionsLog.push(entry);
+        return jsonResult(entry);
+      }
+
       state.mutationCount += 1;
       if (state.mutationCount > MAX_SKILLS_PER_REVIEW) {
         const entry: ReviewActionLog = {
           action: params.action ?? "unknown",
-          name: params.name ?? "",
+          name,
           result: "skipped",
           reason: "max_skills_per_review_exceeded",
         };
         actionsLog.push(entry);
         return jsonResult(entry);
       }
+
+      // Reserve the name BEFORE delegating, so even a downstream skip
+      // (validation failure inside skillManage) still blocks retries.
+      if (name) processedNames.add(name);
+
       const outcome = executeSkillReviewAction(params);
       actionsLog.push(outcome);
       return jsonResult(outcome);
@@ -293,7 +329,8 @@ export async function runSkillReview(
 
     const actionsLog: ReviewActionLog[] = [];
     const counterState = { mutationCount: 0 };
-    const reviewTool = buildReviewToolWithCap(actionsLog, counterState);
+    const processedNames = new Set<string>();
+    const reviewTool = buildReviewToolWithCap(actionsLog, counterState, processedNames);
 
     // NOTE: authStorage left to default — resolves to agentDir/auth.json.
     // Parent agent has its own AuthStorage instance on the same file.
