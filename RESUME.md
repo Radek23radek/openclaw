@@ -1,38 +1,61 @@
 # Stan projektu — pauza 2026-05-12
 
-## Stan pauzy 2026-05-14
+## Stan pauzy 2026-05-14 (post-4.3.c)
 
-**4.3.b CAŁY ZAMKNIĘTY** — 6 commitów + udokumentowany SKIP b.4:
+**4.3.c CAŁY ZAMKNIĘTY** — 7 commitów (c.1, c.2, c.3.a, c.3.b, c.4, c.5, c.5.a):
 
-- `9b1f86d5f6` b.1 — runSkillReview szkielet + reviewModel config
-- `d1b9da3722` pre-b.2 — narrow AgentMessage union (3 z 8 preexisting TS errors)
-- `94898e409c` b.2 — createAgentSession + sandbox + customTools (G1 cap, G5 timeout)
-- `d9bcfd53ec` b.3 — G3 dedup names + G8 model spec regex
-- `eb40fbd1f3` b.4 SKIP — pi-coding-agent native OAuth refresh + retry (R2 discovery)
-- `c62de67205` b.5 — telemetria tokensIn/tokensOut + complete log line
+- `1c68838288` c.1 chore(types): narrow AgentMessage union in turn-fts-persistence
+- `a90b9da258` c.2 test: flaky timing tolerance +9 (Date.now() truncation slop)
+- `942d5294e2` c.3.a docs+test: pi-coding-agent type discrepancy + helper casts
+- `0f35201a87` c.3.b feat: cooldown state types + pure helpers (G4 pure)
+- `10280b3807` c.4 feat: cooldown integration into scheduleLearningReviewIfDue (G4 active)
+- `aabe3b5f58` c.5 feat: real runSkillReview wired into attempt.ts
+- (this commit) c.5.a docs: latent undefined config crash hazard (V2 recon)
 
-**Następny krok**: **4.3.c** — zacząć od **KROK 0 propozycja struktury** (recon przed kodem, wzorem 4.3.b). Scope 4.3.c:
+**Status guardraili: 10/10 done** — G4 cooldown fully integrated (c.3.b pure helpers + c.4 trigger integration + c.5 production wiring feeds real ReviewResult into recordReviewResult).
 
-- G4 cooldown state w trigger module (callback z review → counter w `learning-review-trigger.ts`)
-- Wpięcie real `runSkillReview` do `attempt.ts:3796` (zamiast no-op)
-- Fix 4 preexisting TS errors (`attempt.ts:3792,3799` `OpenClawConfig | undefined`, `turn-fts-persistence.ts:62,114` `BashExecutionMessage` content access)
-- Fix flaky `learning-review-trigger.test.ts:225` (timing 1ms off — `vi.useFakeTimers()` lub `>=` zamiast `>= +10`)
+**Wyniki**: tsgo `tsconfig.core.json` **0 errors** (oba pre-existing `attempt.ts:3792,3799` naprawione przez outer `if (params.config)` narrow w c.5). **220/220 testów green** (194 → 220, +13 it × 2 workspace projects = +26).
 
-**Status guardraili po 4.3.b**: 9/10 done. G4 → 4.3.c.
+**Następny krok**: **4.3.d** — Mock LLM strategy + test cases. Zaczynamy od **KROK 0 propozycja struktury** w nowej sesji (wzorem 4.3.b/c — recon przed kodem). Scope 4.3.d z PORT_PLAN_4_3:
 
-**Push do remote**: TODO jutro. `origin` wskazuje na upstream `https://github.com/openclaw/openclaw` — potrzebny personal fork (np. `git remote add fork <my-fork-url>` + `git push fork main`). 13 commitów lokalnych ahead of origin/main, drzewo czyste, bezpieczne lokalnie.
+- 11 oryginalnych test cases z planu (empty, 1 create, 1 update, cap exceeded, malformed, unknown action, throws, duplicate, oversized content, cooldown trip, cooldown reset)
+- Sandbox tests (3): bash blocked, read blocked, write do `auth-profiles.json` blocked
+- Auth tests (3): expired OAuth → refresh + retry, missing profile → skip + warn, fallback do parent's model przy bad `reviewModel`
+- Concurrency limit (2): równoległe wywołania `runSkillReview` w tej samej sesji (FIFO przez lane)
 
-**Ostatni commit**: `c62de67205 feat(learning): telemetry — tokensIn/tokensOut + complete log (Step 4.3.b.5)`
+**Push do remote**: `fork/learning-port` ostatnio pushnięte 18 commitów (po 4.3.b). Po c.5.a będzie **25 commitów** lokalnych. Push planowany na koniec tej sesji (przed pauzą).
 
-**TODO Etap 5** (zebrane podczas 4.3.b):
+**Pliki 4.3.c — dotknięte**:
 
-- `auto_retry_start`/`auto_retry_end` events telemetry (resilience observability — osobno od cost telemetry)
-- `textOutput` extraction (event listener on `message_end`)
-- Native `AgentSession.abort()` może zastąpić nasz Promise.race
-- Custom `reviewModel` override (`<provider>/<id>` lookup w modelRegistry)
-- `cost.total` z `Usage` do log line (nie tylko tokens)
+- `src/agents/pi-embedded-runner/turn-fts-persistence.ts` (c.1)
+- `src/agents/pi-embedded-runner/learning-review-trigger.test.ts` (c.2, c.3.a, c.3.b, c.4 — 13 nowych it tests)
+- `src/agents/pi-embedded-runner/learning-review-trigger.ts` (c.3.b, c.4 — cooldown state + integration)
+- `src/agents/pi-embedded-runner/learning-review.ts` (c.4 — tylko `LearningReviewFn` typ szerszy)
+- `src/agents/pi-embedded-runner/run/attempt.ts` (c.5 — wpięcie production)
+- `PORT_PLAN_4_3.md` (c.3.a, c.5.a — Discoveries section: 2 nowe entries, łącznie 4)
 
-Wszystkie pozostałe pre-existing TODO 4.3.c punkty zachowane w sekcjach poniżej.
+**Kluczowe decyzje 4.3.c** (do pamiętania przy 4.3.d):
+
+- Cooldown gate position **B'**: counter ticks BEFORE cooldown check, cooldown is early-exit before trigger compute. Counter must tick during cooldown for passive expiry to land (skipUntilTurnCount jest zakotwiczony do counter'a).
+- `LearningReviewFn` typ poszerzony do `Promise<ReviewResult | void>` — worker w `learning-review.ts` bez zmian (ignoruje return), tylko trigger wrapper konsumuje.
+- `turnCountAtFire` captured w closure przy schedule (NOT complete time) — review latency (1s–60s) nie powinien wpływać na cooldown duration math.
+- `const config = params.config` capture po outer `if (params.config)` — TS narrowing NIE survives async closure boundary dla property access (empirycznie potwierdzone w V1 recon). Const capture eliminuje potrzebę `!` non-null assertions.
+- Cooldown trip → reset emptyStreak do 0 + set skipUntilTurnCount → po passive expiry pierwszy empty starts streak od 1 (NIE re-trip immediately).
+- Non-empty review (active reset) clear OBA pola — counter NIE jest resetowany (orthogonal state: interval pacing vs cooldown gating).
+
+**TODO Etap 5** (kumulatywne, z 4.3.b i 4.3.c):
+
+- `auto_retry_start`/`auto_retry_end` events telemetry (z b.5)
+- `textOutput` extraction (event listener on `message_end` — z b.5)
+- Native `AgentSession.abort()` może zastąpić Promise.race (z b.2)
+- Custom `reviewModel` override (`<provider>/<id>` lookup w modelRegistry — z b.3)
+- `cost.total` z `Usage` do log line (z b.5)
+- File pi-coding-agent issue / contribute corrected types dla `stopReason` runtime/typed mismatch (z c.3.a)
+- 9 pre-existing test-file TS errors: `turn-fts-persistence.test.ts` (3) + `skill-manager-tool.test.ts` (6) — cleanup post-4.3.e
+- Persist cooldown state w SQLite (`workspace.db`) zamiast in-memory Map (z 4.3.c B.1 decyzji)
+- Configurable cooldown thresholds (3 empties / 10 turns) via `LearningConfig` (z 4.3.c.3.b)
+
+Wszystkie pozostałe pre-existing TODO punkty zachowane w sekcjach poniżej.
 
 ---
 
