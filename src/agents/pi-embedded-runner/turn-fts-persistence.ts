@@ -59,7 +59,7 @@ function truncateForFts(content: string): string {
   return `${head}\n\n…[FTS_TRUNCATED bytes=${droppedBytes} original_size=${originalSize}]…\n\n${tail}`;
 }
 
-function extractText(content: AgentMessage["content"]): string {
+function extractText(content: unknown): string {
   if (typeof content === "string") {
     return content.trim();
   }
@@ -111,6 +111,7 @@ export function persistTurnMessagesToFts(params: PersistTurnMessagesParams): num
     for (const msg of newMessages) {
       const role = toInsertableRole(msg.role);
       if (!role) continue;
+      if (!("content" in msg)) continue;
       const rawContent = extractText(msg.content);
       if (!rawContent) continue;
 
