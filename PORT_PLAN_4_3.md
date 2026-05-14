@@ -730,6 +730,41 @@ actual runtime behavior. Casting is the pragmatic mitigation.
 **Future Etap 5 cleanup**: file pi-coding-agent issue upstream OR contribute
 corrected types.
 
+### Latent crash hazard for undefined `params.config`
+
+Discovered during 4.3.c.5 pre-implementation verification (V2 recon).
+
+`attempt.ts` call site (`:3796`) originally passed `params.config` directly to:
+
+- `persistTurnMessagesToFts` (Step 4.1)
+- `scheduleLearningReviewIfDue` (Step 4.2)
+
+Both downstream consumers assumed `config: OpenClawConfig` (non-undefined):
+
+- `isLearningEnabled` in `learning-review-trigger.ts`: `undefined.learning` → TypeError
+- `persistTurnMessagesToFts`: `resolveAgentWorkspaceDir(undefined, agentId)` → crash
+
+TypeScript narrowing was masked because `params.config: OpenClawConfig | undefined`
+in `RunEmbeddedPiAgentParams` — strict mode flagged this as the two pre-existing
+TS errors at `:3792` and `:3799`, but the existing call site passed it without
+narrow and accepted the type warnings.
+
+In practice, `params.config` is always defined at turn-end, so the crash never
+manifested in production. But the latent hazard remained.
+
+**4.3.c.5 fix**: outer `if (params.config) { const config = params.config; ... }`
+narrow + capture defensively eliminates the hazard. No-op in normal flow,
+safe skip in the pathological case. Const capture is also necessary because
+TS does not narrow property access (`params.config`) across async closure
+boundaries — verified empirically: removing the `!` from `params.config!` in
+the closure produces TS2322 at the `runSkillReview` call site.
+
+This is the fourth discovery of undocumented or non-obvious behavior in the
+pi-coding-agent / pi-ai ecosystem (alongside: `max_iterations` absence in b.2,
+`AuthStorage` file-level locking in b.4, `stopReason` runtime/typed enum
+mismatch in c.3.a). Pattern: defensive verification before integration
+consistently uncovers latent issues — keep doing the recon-before-code step.
+
 ### Future telemetry (Etap 5, not 4.3)
 
 Subscribe to `auto_retry_start`/`auto_retry_end` events for resilience
