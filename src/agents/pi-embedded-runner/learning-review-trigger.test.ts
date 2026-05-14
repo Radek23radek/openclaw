@@ -2,10 +2,13 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
+  recordReviewResult,
   resetLearningReviewCountersForTest,
   scheduleLearningReviewIfDue,
+  shouldSkipForCooldown,
 } from "./learning-review-trigger.js";
 import { type LearningReviewFn } from "./learning-review.js";
+import { EMPTY_REVIEW_RESULT, type ReviewResult } from "./skill-review-types.js";
 
 // Run scheduled reviews inline so tests can await them deterministically.
 vi.mock("../../process/command-queue.js", () => ({
@@ -34,6 +37,10 @@ function assistantWithToolUse(stopReason: string = "tool_use"): AgentMessage {
     timestamp: 0,
     stopReason,
   } as unknown as AgentMessage;
+}
+
+function makeReviewResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
+  return { ...EMPTY_REVIEW_RESULT, ...overrides };
 }
 
 const enabledConfig: OpenClawConfig = { learning: { enabled: true, nudgeInterval: 5 } };
@@ -231,5 +238,91 @@ describe("scheduleLearningReviewIfDue — async, non-blocking", () => {
     // boundary tick between returnedAt and reviewFinishedAt can shave 1ms
     // off the observed delay even when setTimeout(10) waits its full duration.
     expect(reviewFinishedAt).toBeGreaterThanOrEqual(returnedAt + 9);
+  });
+});
+
+describe("cooldown — state transitions (G4)", () => {
+  it("starts with no cooldown for an unseen session", () => {
+    expect(shouldSkipForCooldown("fresh-session", 1)).toBe(false);
+    expect(shouldSkipForCooldown("fresh-session", 999)).toBe(false);
+  });
+
+  it("does not trip below 3 consecutive empty reviews", () => {
+    recordReviewResult("s1", 5, makeReviewResult());
+    expect(shouldSkipForCooldown("s1", 6)).toBe(false);
+    recordReviewResult("s1", 10, makeReviewResult());
+    expect(shouldSkipForCooldown("s1", 11)).toBe(false);
+  });
+
+  it("trips on 3rd consecutive empty review, cooldown lasts 10 turns", () => {
+    recordReviewResult("s1", 5, makeReviewResult());
+    recordReviewResult("s1", 10, makeReviewResult());
+    recordReviewResult("s1", 15, makeReviewResult());
+    // skipUntilTurnCount = 15 + 10 = 25
+    expect(shouldSkipForCooldown("s1", 15)).toBe(true);
+    expect(shouldSkipForCooldown("s1", 24)).toBe(true);
+    // Passive expiry boundary: turnCount === skipUntilTurnCount is no
+    // longer skipped (strict less-than).
+    expect(shouldSkipForCooldown("s1", 25)).toBe(false);
+    expect(shouldSkipForCooldown("s1", 26)).toBe(false);
+  });
+
+  it("active reset mid-streak: non-empty review clears emptyStreak", () => {
+    recordReviewResult("s1", 5, makeReviewResult());
+    recordReviewResult("s1", 10, makeReviewResult());
+    recordReviewResult("s1", 15, makeReviewResult({ skillsCreated: 1 }));
+    // Streak cleared by the non-empty. Two more empties must NOT trip.
+    recordReviewResult("s1", 20, makeReviewResult());
+    recordReviewResult("s1", 25, makeReviewResult());
+    expect(shouldSkipForCooldown("s1", 26)).toBe(false);
+  });
+
+  it("active reset during cooldown: non-empty review clears it immediately", () => {
+    recordReviewResult("s1", 5, makeReviewResult());
+    recordReviewResult("s1", 10, makeReviewResult());
+    recordReviewResult("s1", 15, makeReviewResult()); // trip → skipUntil = 25
+    expect(shouldSkipForCooldown("s1", 20)).toBe(true);
+    recordReviewResult("s1", 20, makeReviewResult({ skillsUpdated: 1 }));
+    expect(shouldSkipForCooldown("s1", 20)).toBe(false);
+    expect(shouldSkipForCooldown("s1", 24)).toBe(false);
+  });
+
+  it("passive expiry: cooldown ends without an explicit reset call", () => {
+    recordReviewResult("s1", 5, makeReviewResult());
+    recordReviewResult("s1", 10, makeReviewResult());
+    recordReviewResult("s1", 15, makeReviewResult()); // trip → skipUntil = 25
+    expect(shouldSkipForCooldown("s1", 24)).toBe(true);
+    expect(shouldSkipForCooldown("s1", 25)).toBe(false);
+    // emptyStreak was reset to 0 at trip time, so a fresh empty after
+    // expiry starts a NEW streak from 1, not re-trips immediately.
+    recordReviewResult("s1", 25, makeReviewResult());
+    expect(shouldSkipForCooldown("s1", 26)).toBe(false);
+  });
+
+  it("recognises non-empty via skillsDeleted (delete-only counts as work)", () => {
+    recordReviewResult("s1", 5, makeReviewResult());
+    recordReviewResult("s1", 10, makeReviewResult());
+    recordReviewResult("s1", 15, makeReviewResult({ skillsDeleted: 1 }));
+    recordReviewResult("s1", 20, makeReviewResult());
+    recordReviewResult("s1", 25, makeReviewResult());
+    expect(shouldSkipForCooldown("s1", 26)).toBe(false);
+  });
+
+  it("counts `skipped` (rejected by guardrails) as empty — still increments streak", () => {
+    // isEmptyReview ignores `skipped`; only created+updated+deleted matter.
+    // Three reviews where the model called the tool but every call was
+    // skipped by a guardrail still count as 3 empties → trip.
+    recordReviewResult("s1", 5, makeReviewResult({ skipped: 3 }));
+    recordReviewResult("s1", 10, makeReviewResult({ skipped: 3 }));
+    recordReviewResult("s1", 15, makeReviewResult({ skipped: 3 }));
+    expect(shouldSkipForCooldown("s1", 16)).toBe(true);
+  });
+
+  it("sessions are independent", () => {
+    recordReviewResult("s1", 5, makeReviewResult());
+    recordReviewResult("s1", 10, makeReviewResult());
+    recordReviewResult("s1", 15, makeReviewResult()); // s1 trips
+    expect(shouldSkipForCooldown("s1", 20)).toBe(true);
+    expect(shouldSkipForCooldown("s2", 20)).toBe(false);
   });
 });

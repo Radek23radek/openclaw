@@ -24,10 +24,23 @@ import {
   type LearningReviewFn,
 } from "./learning-review.js";
 import { log } from "./logger.js";
+import { isEmptyReview, type ReviewResult } from "./skill-review-types.js";
 
 const DEFAULT_NUDGE_INTERVAL = 5;
 
+// G4 cooldown: after N consecutive empty reviews per session, skip the next
+// M turns. Empty = isEmptyReview(result) per skill-review-types.ts.
+const COOLDOWN_EMPTY_STREAK_THRESHOLD = 3;
+const COOLDOWN_TURNS = 10;
+
 const turnCounters = new Map<string, number>();
+
+type CooldownState = {
+  emptyStreak: number;
+  skipUntilTurnCount: number;
+};
+
+const cooldownStates = new Map<string, CooldownState>();
 
 export type ScheduleIfDueParams = {
   sessionKey: string;
@@ -150,6 +163,57 @@ export function scheduleLearningReviewIfDue(params: ScheduleIfDueParams): void {
   });
 }
 
+/**
+ * Pure read: is this session currently in cooldown at the given turnCount?
+ *
+ * Returns true iff turnCount < skipUntilTurnCount. Passive expiry is
+ * implicit — once turnCount reaches skipUntilTurnCount the check flips
+ * back to false without any explicit reset call.
+ */
+export function shouldSkipForCooldown(sessionKey: string, turnCount: number): boolean {
+  const state = cooldownStates.get(sessionKey);
+  if (!state) return false;
+  return turnCount < state.skipUntilTurnCount;
+}
+
+/**
+ * Update cooldown state from a completed review result.
+ *
+ * G4 semantics:
+ * - Empty review (isEmptyReview): increment emptyStreak. When the streak
+ *   reaches COOLDOWN_EMPTY_STREAK_THRESHOLD (3), trip: set
+ *   skipUntilTurnCount = turnCount + COOLDOWN_TURNS and reset emptyStreak
+ *   to 0 so a fresh empty after passive expiry starts the next streak
+ *   from 1, not 4.
+ * - Non-empty review: clear both fields (active reset — first non-empty
+ *   wins, whether mid-streak or even during an active cooldown window).
+ *
+ * Passive expiry needs no call here — turnCount naturally outpaces
+ * skipUntilTurnCount and shouldSkipForCooldown returns false again.
+ */
+export function recordReviewResult(
+  sessionKey: string,
+  turnCount: number,
+  result: ReviewResult,
+): void {
+  let state = cooldownStates.get(sessionKey);
+  if (!state) {
+    state = { emptyStreak: 0, skipUntilTurnCount: 0 };
+    cooldownStates.set(sessionKey, state);
+  }
+  if (isEmptyReview(result)) {
+    state.emptyStreak += 1;
+    if (state.emptyStreak >= COOLDOWN_EMPTY_STREAK_THRESHOLD) {
+      state.skipUntilTurnCount = turnCount + COOLDOWN_TURNS;
+      state.emptyStreak = 0;
+    }
+  } else {
+    state.emptyStreak = 0;
+    state.skipUntilTurnCount = 0;
+  }
+}
+
 export function resetLearningReviewCountersForTest(): void {
   turnCounters.clear();
+  cooldownStates.clear();
 }
