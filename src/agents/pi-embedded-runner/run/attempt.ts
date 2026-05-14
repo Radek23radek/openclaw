@@ -230,6 +230,7 @@ import {
 import { buildEmbeddedSandboxInfo } from "../sandbox-info.js";
 import { prewarmSessionFile, trackSessionManagerAccess } from "../session-manager-cache.js";
 import { prepareSessionManagerForRun } from "../session-manager-init.js";
+import { runSkillReview } from "../skill-review.js";
 import { resolveEmbeddedRunSkillEntries } from "../skills-runtime.js";
 import {
   describeEmbeddedAgentStreamStrategy,
@@ -3786,23 +3787,31 @@ export async function runEmbeddedAttempt(
             config: params.config,
             warn: (message) => log.warn(message),
           });
-          persistTurnMessagesToFts({
-            sessionId: sessionIdUsed,
-            agentId: sessionAgentId,
-            config: params.config,
-            messagesSnapshot,
-            prePromptMessageCount: contextEngineAfterTurnCheckpoint ?? prePromptMessageCount,
-          });
-          scheduleLearningReviewIfDue({
-            sessionKey: params.sessionKey ?? sessionIdUsed,
-            agentId: sessionAgentId,
-            config: params.config,
-            messagesSnapshot,
-            prePromptMessageCount: contextEngineAfterTurnCheckpoint ?? prePromptMessageCount,
-            reviewFn: async () => {
-              // No-op review until KROK 4.3 wires the real LLM call.
-            },
-          });
+          if (params.config) {
+            const config = params.config;
+            persistTurnMessagesToFts({
+              sessionId: sessionIdUsed,
+              agentId: sessionAgentId,
+              config,
+              messagesSnapshot,
+              prePromptMessageCount: contextEngineAfterTurnCheckpoint ?? prePromptMessageCount,
+            });
+            scheduleLearningReviewIfDue({
+              sessionKey: params.sessionKey ?? sessionIdUsed,
+              agentId: sessionAgentId,
+              config,
+              messagesSnapshot,
+              prePromptMessageCount: contextEngineAfterTurnCheckpoint ?? prePromptMessageCount,
+              reviewFn: async (msgs) =>
+                runSkillReview(msgs, {
+                  agentDir,
+                  workspaceDir: params.workspaceDir,
+                  config,
+                  parentModel: params.model,
+                  signal: params.abortSignal,
+                }),
+            });
+          }
         }
 
         if (
