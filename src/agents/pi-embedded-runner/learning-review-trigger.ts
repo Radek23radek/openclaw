@@ -126,6 +126,17 @@ export function scheduleLearningReviewIfDue(params: ScheduleIfDueParams): void {
   const turnCount = (turnCounters.get(params.sessionKey) ?? 0) + 1;
   turnCounters.set(params.sessionKey, turnCount);
 
+  // G4 cooldown gate (B'): counter ticks above so passive expiry can land,
+  // but we early-exit before computing interval/natural-break — cooldown is
+  // a "soft disabled" window. Active reset (non-empty review clearing the
+  // cooldown) happens via recordReviewResult below, not here.
+  if (shouldSkipForCooldown(params.sessionKey, turnCount)) {
+    log.info(
+      `[learning-review] cooldown-active skip sessionKey=${params.sessionKey} agentId=${params.agentId} turnCount=${turnCount}`,
+    );
+    return;
+  }
+
   const interval = params.config.learning?.nudgeInterval ?? DEFAULT_NUDGE_INTERVAL;
   const turnMessages = params.messagesSnapshot.slice(Math.max(0, params.prePromptMessageCount));
 
@@ -144,6 +155,12 @@ export function scheduleLearningReviewIfDue(params: ScheduleIfDueParams): void {
     `[learning-review] schedule sessionKey=${params.sessionKey} agentId=${params.agentId} trigger=${trigger} turnCount=${turnCount}`,
   );
 
+  // Capture turnCount at fire time so cooldown bookkeeping uses the turn
+  // the review STARTED at, not the turn it completed at (review latency
+  // can be 1s–60s; tying cooldown duration to completion would introduce
+  // jitter that has no semantic meaning).
+  const turnCountAtFire = turnCount;
+
   scheduleLearningReview({
     sessionKey: params.sessionKey,
     messages: toLearningMessages(params.messagesSnapshot),
@@ -151,10 +168,13 @@ export function scheduleLearningReviewIfDue(params: ScheduleIfDueParams): void {
     reviewFn: async (msgs) => {
       const startedAt = Date.now();
       try {
-        await params.reviewFn(msgs);
+        const result = await params.reviewFn(msgs);
         log.info(
           `[learning-review] complete sessionKey=${params.sessionKey} durationMs=${Date.now() - startedAt}`,
         );
+        if (result) {
+          recordReviewResult(params.sessionKey, turnCountAtFire, result);
+        }
       } catch (err) {
         log.warn(`[learning-review] failed sessionKey=${params.sessionKey} error=${String(err)}`);
         throw err;

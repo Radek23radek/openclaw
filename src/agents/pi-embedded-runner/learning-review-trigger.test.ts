@@ -326,3 +326,129 @@ describe("cooldown — state transitions (G4)", () => {
     expect(shouldSkipForCooldown("s2", 20)).toBe(false);
   });
 });
+
+describe("scheduleLearningReviewIfDue — cooldown integration (4.3.c.4)", () => {
+  const naturalBreakTurn = (): AgentMessage[] => [
+    userMsg("do"),
+    assistantWithToolUse("tool_use"),
+    assistantText("done", "end_turn"),
+  ];
+
+  it("counter ticks during cooldown; fire resumes at passive expiry boundary", async () => {
+    const reviewFn = vi.fn<LearningReviewFn>().mockResolvedValue(makeReviewResult());
+    const baseParams = {
+      sessionKey: "s-int-expiry",
+      agentId: "main",
+      config: enabledConfig,
+      messagesSnapshot: naturalBreakTurn(),
+      prePromptMessageCount: 0,
+      reviewFn,
+    };
+
+    // Turns 1, 2, 3: each fires (natural-break), returns empty.
+    // Turn 3's empty trips cooldown: skipUntil = 3 + 10 = 13.
+    for (let i = 0; i < 3; i += 1) {
+      scheduleLearningReviewIfDue(baseParams);
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(reviewFn).toHaveBeenCalledTimes(3);
+
+    // Turns 4..12: cooldown active. Counter ticks but reviewFn is NOT called.
+    for (let i = 0; i < 9; i += 1) {
+      scheduleLearningReviewIfDue(baseParams);
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(reviewFn).toHaveBeenCalledTimes(3);
+
+    // Turn 13: counter=13, shouldSkipForCooldown(13) = 13<13 = false → expiry.
+    // Natural-break trigger fires the review again.
+    scheduleLearningReviewIfDue(baseParams);
+    await new Promise((r) => setImmediate(r));
+    expect(reviewFn).toHaveBeenCalledTimes(4);
+  });
+
+  it("does NOT call reviewFn while cooldown is active", async () => {
+    const reviewFn = vi.fn<LearningReviewFn>().mockResolvedValue(makeReviewResult());
+    const baseParams = {
+      sessionKey: "s-int-skip",
+      agentId: "main",
+      config: enabledConfig,
+      messagesSnapshot: naturalBreakTurn(),
+      prePromptMessageCount: 0,
+      reviewFn,
+    };
+
+    for (let i = 0; i < 3; i += 1) {
+      scheduleLearningReviewIfDue(baseParams);
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(reviewFn).toHaveBeenCalledTimes(3);
+
+    // Turn 4: cooldown gate blocks before trigger compute. reviewFn stays at 3.
+    scheduleLearningReviewIfDue(baseParams);
+    await new Promise((r) => setImmediate(r));
+    expect(reviewFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("result handoff: non-empty review at expiry clears cooldown via recordReviewResult", async () => {
+    const reviewFn = vi.fn<LearningReviewFn>();
+    reviewFn.mockResolvedValueOnce(makeReviewResult()); // turn 1
+    reviewFn.mockResolvedValueOnce(makeReviewResult()); // turn 2
+    reviewFn.mockResolvedValueOnce(makeReviewResult()); // turn 3 → trip
+    reviewFn.mockResolvedValueOnce(makeReviewResult({ skillsCreated: 1 })); // turn 13 → non-empty
+    reviewFn.mockResolvedValue(makeReviewResult()); // any further turns: empty
+
+    const baseParams = {
+      sessionKey: "s-int-clear",
+      agentId: "main",
+      config: enabledConfig,
+      messagesSnapshot: naturalBreakTurn(),
+      prePromptMessageCount: 0,
+      reviewFn,
+    };
+
+    // 3 fires → trip at turn 3 (skipUntil = 13).
+    for (let i = 0; i < 3; i += 1) {
+      scheduleLearningReviewIfDue(baseParams);
+      await new Promise((r) => setImmediate(r));
+    }
+    // Turns 4..12: cooldown active.
+    for (let i = 0; i < 9; i += 1) {
+      scheduleLearningReviewIfDue(baseParams);
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(reviewFn).toHaveBeenCalledTimes(3);
+
+    // Turn 13: expiry, fire, returns non-empty → recordReviewResult clears both
+    // emptyStreak (was 0 since trip) and skipUntilTurnCount (was 13).
+    scheduleLearningReviewIfDue(baseParams);
+    await new Promise((r) => setImmediate(r));
+    expect(reviewFn).toHaveBeenCalledTimes(4);
+
+    // Cooldown is now cleared — verify externally via shouldSkipForCooldown.
+    expect(shouldSkipForCooldown("s-int-clear", 14)).toBe(false);
+    expect(shouldSkipForCooldown("s-int-clear", 100)).toBe(false);
+  });
+
+  it("backward-compat: reviewFn returning Promise<void> is accepted, never trips cooldown", async () => {
+    // Pre-c.4 reviewFns (and the production no-op until 4.3.c.5) return void.
+    // Wrapper guards with `if (result)` so void = no recordReviewResult call,
+    // so streak never advances and cooldown never trips.
+    const reviewFn = vi.fn<LearningReviewFn>().mockResolvedValue(undefined);
+    const baseParams = {
+      sessionKey: "s-int-void",
+      agentId: "main",
+      config: enabledConfig,
+      messagesSnapshot: naturalBreakTurn(),
+      prePromptMessageCount: 0,
+      reviewFn,
+    };
+
+    for (let i = 0; i < 5; i += 1) {
+      scheduleLearningReviewIfDue(baseParams);
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(reviewFn).toHaveBeenCalledTimes(5);
+    expect(shouldSkipForCooldown("s-int-void", 6)).toBe(false);
+  });
+});
