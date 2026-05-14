@@ -162,6 +162,13 @@ export type SkillReviewDeps = {
    * real `createAgentSession` from pi-coding-agent is used.
    */
   createSession?: typeof createAgentSession;
+  /**
+   * Test seam — overrides the pre-flight auth resolver (G9). Production
+   * leaves this undefined and the real `getApiKeyForModel` from model-auth
+   * is used. d.5 auth tests inject a rejecting stub here to assert the
+   * G9 skip path returns EMPTY_REVIEW_RESULT.
+   */
+  resolveAuth?: typeof getApiKeyForModel;
 };
 
 /** G8: format check for learning.reviewModel — "<provider>/<model_id>". */
@@ -358,7 +365,7 @@ export async function runSkillReview(
     // gracefully — the trigger module advances the cooldown via the empty
     // result it gets back (cooldown wiring lands in 4.3.c).
     try {
-      await getApiKeyForModel({
+      await (deps?.resolveAuth ?? getApiKeyForModel)({
         model,
         cfg: context.config,
         agentDir: context.agentDir,
