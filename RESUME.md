@@ -1,49 +1,60 @@
 # Stan projektu — pauza 2026-05-12
 
-## Stan pauzy 2026-05-14 (post-4.3.c)
+## Stan pauzy 2026-05-15 (mid-4.3.d, after d.3)
 
-**4.3.c CAŁY ZAMKNIĘTY** — 7 commitów (c.1, c.2, c.3.a, c.3.b, c.4, c.5, c.5.a):
+**4.3.d w toku — 3 z 5 podkroków zamknięte**:
 
-- `1c68838288` c.1 chore(types): narrow AgentMessage union in turn-fts-persistence
-- `a90b9da258` c.2 test: flaky timing tolerance +9 (Date.now() truncation slop)
-- `942d5294e2` c.3.a docs+test: pi-coding-agent type discrepancy + helper casts
-- `0f35201a87` c.3.b feat: cooldown state types + pure helpers (G4 pure)
-- `10280b3807` c.4 feat: cooldown integration into scheduleLearningReviewIfDue (G4 active)
-- `aabe3b5f58` c.5 feat: real runSkillReview wired into attempt.ts
-- (this commit) c.5.a docs: latent undefined config crash hazard (V2 recon)
+- `6ff6fe19ef` d.1 feat: inject createSession seam via SkillReviewDeps
+- `2fdbcd45e6` d.2 test: mock fixtures + 3 happy-path tests (empty, create, update)
+- `8579cfd0d6` d.3 test: 6 guardrail+defensive (G1, G2, G3, empty-name, missing-content, G7) + G5 deferred
 
-**Status guardraili: 10/10 done** — G4 cooldown fully integrated (c.3.b pure helpers + c.4 trigger integration + c.5 production wiring feeds real ReviewResult into recordReviewResult).
+**Wyniki po d.3**: **238 passed | 2 skipped** (G5 timeout deferred do 4.3.e, jeden it.skip × 2 workspace projects = 2 skipped). tsgo `tsconfig.core.json` **0 errors**. Drzewo czyste.
 
-**Wyniki**: tsgo `tsconfig.core.json` **0 errors** (oba pre-existing `attempt.ts:3792,3799` naprawione przez outer `if (params.config)` narrow w c.5). **220/220 testów green** (194 → 220, +13 it × 2 workspace projects = +26).
+**Pozostały scope 4.3.d** (2 podkroki):
 
-**Następny krok**: **4.3.d** — Mock LLM strategy + test cases. Zaczynamy od **KROK 0 propozycja struktury** w nowej sesji (wzorem 4.3.b/c — recon przed kodem). Scope 4.3.d z PORT_PLAN_4_3:
+- **4.3.d.4** — Sandbox configuration assertions (~50 LOC, 3 tests):
+  - `passes noTools: "builtin"` do createAgentSession
+  - `passes customTools z dokładnie 1 entry name="skill_manage"`
+  - `uses SessionManager.inMemory()` dla review fork
+- **4.3.d.5** — Auth + model resolution tests (~80 LOC, 3 tests):
+  - Missing API key (G9) — resolveAuth rejects → EMPTY_REVIEW_RESULT
+  - Invalid `reviewModel` format (G8) — REVIEW_MODEL_SPEC_REGEX fail → fallback do parent
+  - `reviewModel: "auto"` → resolved to parentModel
 
-- 11 oryginalnych test cases z planu (empty, 1 create, 1 update, cap exceeded, malformed, unknown action, throws, duplicate, oversized content, cooldown trip, cooldown reset)
-- Sandbox tests (3): bash blocked, read blocked, write do `auth-profiles.json` blocked
-- Auth tests (3): expired OAuth → refresh + retry, missing profile → skip + warn, fallback do parent's model przy bad `reviewModel`
-- Concurrency limit (2): równoległe wywołania `runSkillReview` w tej samej sesji (FIFO przez lane)
+**Pre-d.4 recon TODO** (przed kodem): `SessionManager.inMemory()` identification — jak rozpoznać instance w test assertion? Opcje:
 
-**Push do remote**: `fork/learning-port` ostatnio pushnięte 18 commitów (po 4.3.b). Po c.5.a będzie **25 commitów** lokalnych. Push planowany na koniec tej sesji (przed pauzą).
+- `instanceof SessionManager`
+- internal marker prop
+- Najsłabsza: `expect(opts.sessionManager).toBeDefined()`
+  Sprawdź `node_modules/@earendil-works/pi-coding-agent/dist/...` 1 min, wybierz najprostszą strategię.
 
-**Pliki 4.3.c — dotknięte**:
+**G5 timeout — deferred do 4.3.e**:
 
-- `src/agents/pi-embedded-runner/turn-fts-persistence.ts` (c.1)
-- `src/agents/pi-embedded-runner/learning-review-trigger.test.ts` (c.2, c.3.a, c.3.b, c.4 — 13 nowych it tests)
-- `src/agents/pi-embedded-runner/learning-review-trigger.ts` (c.3.b, c.4 — cooldown state + integration)
-- `src/agents/pi-embedded-runner/learning-review.ts` (c.4 — tylko `LearningReviewFn` typ szerszy)
-- `src/agents/pi-embedded-runner/run/attempt.ts` (c.5 — wpięcie production)
-- `PORT_PLAN_4_3.md` (c.3.a, c.5.a — Discoveries section: 2 nowe entries, łącznie 4)
+- Próby: `vi.useFakeTimers + vi.advanceTimersByTimeAsync(61_000)` z pending `session.prompt()` (oba warianty: never-resolve `new Promise(() => {})` ORAZ `setTimeout(resolve, 120_000)`) hangują.
+- Root cause: interakcja Promise.race + nested await + microtask drain pod fake timers stalla.
+- Workable alternative wymagałaby nowego prod seam (np. `timeoutMs?` w SkillReviewDeps lub injectable setTimeout) — out of scope dla d.3.
+- 4.3.e end-to-end z real LLM exercise timeout naturalnie.
+- Comment z details inline w `skill-review.test.ts` przy `it.skip`.
 
-**Kluczowe decyzje 4.3.c** (do pamiętania przy 4.3.d):
+**Następny krok po 4.3.d**: **4.3.e** — Smoke test end-to-end z REAL LLM (3 scenariusze: API key Anthropic, OAuth Claude Pro/Max, OAuth Codex; 5 tur prostego zadania każdy; weryfikacja że skille powstają w `~/.openclaw/skills/`). To finalny etap 4.3.
 
-- Cooldown gate position **B'**: counter ticks BEFORE cooldown check, cooldown is early-exit before trigger compute. Counter must tick during cooldown for passive expiry to land (skipUntilTurnCount jest zakotwiczony do counter'a).
-- `LearningReviewFn` typ poszerzony do `Promise<ReviewResult | void>` — worker w `learning-review.ts` bez zmian (ignoruje return), tylko trigger wrapper konsumuje.
-- `turnCountAtFire` captured w closure przy schedule (NOT complete time) — review latency (1s–60s) nie powinien wpływać na cooldown duration math.
-- `const config = params.config` capture po outer `if (params.config)` — TS narrowing NIE survives async closure boundary dla property access (empirycznie potwierdzone w V1 recon). Const capture eliminuje potrzebę `!` non-null assertions.
-- Cooldown trip → reset emptyStreak do 0 + set skipUntilTurnCount → po passive expiry pierwszy empty starts streak od 1 (NIE re-trip immediately).
-- Non-empty review (active reset) clear OBA pola — counter NIE jest resetowany (orthogonal state: interval pacing vs cooldown gating).
+**Plik 4.3.d dotknięte**:
 
-**TODO Etap 5** (kumulatywne, z 4.3.b i 4.3.c):
+- `src/agents/pi-embedded-runner/skill-review.ts` (d.1 + d.2 — extend `SkillReviewDeps` o `createSession?` + `resolveAuth?`; `runSkillReview` redirect na deps)
+- `src/agents/pi-embedded-runner/skill-review.test.ts` (NEW w d.2 + d.3 — 9 helperów + 9 testów + 1 skip)
+
+**Kluczowe decyzje 4.3.d** (do pamiętania przy d.4/d.5):
+
+- Test seam injection przez `SkillReviewDeps` (NIE `vi.mock("@earendil-works/...")` module-level). Konsystencja: createSession (d.1) + resolveAuth (d.2 mini-extend) per-test config, zero shared mock state.
+- `captureTools` mechanism w `makeMockSession`: mock `createSession` woła `mock.captureTools(opts.customTools ?? [])` PRZED return — fake session dostaje referencję na stateful `buildReviewToolWithCap` wrapper (G1 closure counter + G3 dedup Set).
+- `runAsBackgroundReview` wrap dla testów które wywołują skill_manage (mirror production `learning-review.ts:54`).
+- F.5 telemetria via session.messages — assistant variants z `usage: { input, output }`, defensywny cast `(m as { usage? }).usage` znaczy że messages bez `usage` → zero contribution (no crash).
+- "Unknown action" test DROPPED — `executeSkillReviewAction` switch nie ma default case (production defensive gap, nie nasz guardrail; testowanie pinowałoby bug).
+- G5 timeout DEFERRED do 4.3.e — szczegóły wyżej.
+
+**Push do remote**: `fork/learning-port` aktualnie na `2b67425ca3` (post-c.5.a, 25 commitów). Po push w tej sesji (d.1 + d.2 + d.3 + RESUME update commit) będzie **29 commitów** na fork.
+
+**TODO Etap 5** (kumulatywne, z 4.3.b, 4.3.c, 4.3.d):
 
 - `auto_retry_start`/`auto_retry_end` events telemetry (z b.5)
 - `textOutput` extraction (event listener on `message_end` — z b.5)
@@ -52,8 +63,16 @@
 - `cost.total` z `Usage` do log line (z b.5)
 - File pi-coding-agent issue / contribute corrected types dla `stopReason` runtime/typed mismatch (z c.3.a)
 - 9 pre-existing test-file TS errors: `turn-fts-persistence.test.ts` (3) + `skill-manager-tool.test.ts` (6) — cleanup post-4.3.e
-- Persist cooldown state w SQLite (`workspace.db`) zamiast in-memory Map (z 4.3.c B.1 decyzji)
-- Configurable cooldown thresholds (3 empties / 10 turns) via `LearningConfig` (z 4.3.c.3.b)
+- Persist cooldown state w SQLite (`workspace.db`) zamiast in-memory Map (z 4.3.c B.1)
+- Configurable cooldown thresholds (3 empties / 10 turns) via `LearningConfig` (z c.3.b)
+- G5 timeout hookable seam — `timeoutMs?` w SkillReviewDeps lub injectable setTimeout (z d.3)
+- "Unknown action" defensive: add `default` case w `executeSkillReviewAction` switch (z d.3 recon)
+- 4.3.c kluczowe decyzje (zarchiwizowane — patrz commit historia dla details):
+  - Cooldown gate position B' (counter ticks before cooldown gate)
+  - `LearningReviewFn: Promise<ReviewResult | void>` widening
+  - `turnCountAtFire` capture in closure (fire-time, not complete-time)
+  - `const config = params.config` capture po outer `if (params.config)`
+  - Cooldown trip resetuje emptyStreak; active reset clear obu pól (counter zachowuje stan)
 
 Wszystkie pozostałe pre-existing TODO punkty zachowane w sekcjach poniżej.
 
