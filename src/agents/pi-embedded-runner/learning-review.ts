@@ -11,6 +11,7 @@ import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { runAsBackgroundReview } from "../skills/skill-provenance.js";
 import { resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
+import type { ReviewResult } from "./skill-review-types.js";
 
 const LEARNING_REVIEW_LANE_SUFFIX = ":learning-review";
 
@@ -19,7 +20,13 @@ export type LearningMessage = {
   content: string;
 };
 
-export type LearningReviewFn = (messages: LearningMessage[]) => Promise<void>;
+/**
+ * Real reviewFn (runSkillReview from 4.3.b) returns a ReviewResult so the
+ * trigger module can update cooldown state (G4 — 4.3.c.4). Test mocks and
+ * the pre-4.3.c no-op may still return Promise<void>; the worker ignores
+ * the return value either way — only the trigger's wrapper consumes it.
+ */
+export type LearningReviewFn = (messages: LearningMessage[]) => Promise<ReviewResult | void>;
 
 type LearningReviewWorkerParams = {
   sessionKey: string;
