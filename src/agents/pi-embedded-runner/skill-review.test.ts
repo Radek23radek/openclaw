@@ -225,3 +225,180 @@ describe("runSkillReview — happy path (4.3.d.2)", () => {
     expect(updatedContent).toContain("Updated body");
   });
 });
+
+// ===========================================================================
+// Guardrail + defensive tests (4.3.d.3)
+// ===========================================================================
+
+describe("runSkillReview — guardrails + defensive (4.3.d.3)", () => {
+  it("G1: caps skill mutations at 3 per review; 4th create is skipped", async () => {
+    const calls = [1, 2, 3, 4].map((i) => ({
+      tool: "skill_manage",
+      input: {
+        action: "create",
+        name: `cap-${i}`,
+        description: `skill ${i}`,
+        content: `# Skill ${i}\n\nBody.`,
+      },
+    }));
+    const mock = makeMockSession({ toolCalls: calls });
+
+    const result = await runAsBackgroundReview(() =>
+      runSkillReview(makeMockMessages(), makeReviewContext(), {
+        createSession: makeMockCreateSession(mock),
+        resolveAuth: resolveAuthOk,
+      }),
+    );
+
+    expect(result.skillsCreated).toBe(3);
+    expect(result.skipped).toBe(1);
+    const skippedEntry = result.actionsLog?.find((e) => e.result === "skipped");
+    expect(skippedEntry?.reason).toBe("max_skills_per_review_exceeded");
+  });
+
+  it("G3: dedup by name — second tool_use with same name is skipped", async () => {
+    const mock = makeMockSession({
+      toolCalls: [
+        {
+          tool: "skill_manage",
+          input: {
+            action: "create",
+            name: "dup",
+            description: "first",
+            content: "# First",
+          },
+        },
+        {
+          tool: "skill_manage",
+          input: {
+            action: "create",
+            name: "dup",
+            description: "second",
+            content: "# Second",
+          },
+        },
+      ],
+    });
+
+    const result = await runAsBackgroundReview(() =>
+      runSkillReview(makeMockMessages(), makeReviewContext(), {
+        createSession: makeMockCreateSession(mock),
+        resolveAuth: resolveAuthOk,
+      }),
+    );
+
+    expect(result.skillsCreated).toBe(1);
+    expect(result.skipped).toBe(1);
+    const skippedEntry = result.actionsLog?.find((e) => e.result === "skipped");
+    expect(skippedEntry?.reason).toBe("duplicate_name_in_review");
+  });
+
+  it("G2: skips create when content exceeds 32KB byte limit", async () => {
+    // MAX_SKILL_CONTENT_BYTES = 32_768 in skill-manager-tool.ts.
+    const oversized = "x".repeat(33_000);
+    const mock = makeMockSession({
+      toolCalls: [
+        {
+          tool: "skill_manage",
+          input: {
+            action: "create",
+            name: "huge",
+            description: "test G2",
+            content: oversized,
+          },
+        },
+      ],
+    });
+
+    const result = await runAsBackgroundReview(() =>
+      runSkillReview(makeMockMessages(), makeReviewContext(), {
+        createSession: makeMockCreateSession(mock),
+        resolveAuth: resolveAuthOk,
+      }),
+    );
+
+    expect(result.skillsCreated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.actionsLog?.[0]?.reason).toContain("exceeds limit");
+  });
+
+  it("defensive: skips create with empty name", async () => {
+    const mock = makeMockSession({
+      toolCalls: [
+        {
+          tool: "skill_manage",
+          input: {
+            action: "create",
+            name: "",
+            description: "missing-name",
+            content: "# Body",
+          },
+        },
+      ],
+    });
+
+    const result = await runAsBackgroundReview(() =>
+      runSkillReview(makeMockMessages(), makeReviewContext(), {
+        createSession: makeMockCreateSession(mock),
+        resolveAuth: resolveAuthOk,
+      }),
+    );
+
+    expect(result.skillsCreated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.actionsLog?.[0]?.reason).toBe("name is required");
+  });
+
+  it("defensive: skips create when content field is missing", async () => {
+    const mock = makeMockSession({
+      toolCalls: [
+        {
+          tool: "skill_manage",
+          input: {
+            action: "create",
+            name: "no-content",
+            description: "missing content field",
+            // content omitted on purpose
+          },
+        },
+      ],
+    });
+
+    const result = await runAsBackgroundReview(() =>
+      runSkillReview(makeMockMessages(), makeReviewContext(), {
+        createSession: makeMockCreateSession(mock),
+        resolveAuth: resolveAuthOk,
+      }),
+    );
+
+    expect(result.skillsCreated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.actionsLog?.[0]?.reason).toBe("content is required");
+  });
+
+  it("G7: returns EMPTY_REVIEW_RESULT when createSession rejects (does not throw)", async () => {
+    const failingCreateSession = (async () => {
+      throw new Error("simulated session creation failure");
+    }) as unknown as typeof import("@earendil-works/pi-coding-agent").createAgentSession;
+
+    const result = await runSkillReview(makeMockMessages(), makeReviewContext(), {
+      createSession: failingCreateSession,
+      resolveAuth: resolveAuthOk,
+    });
+
+    expect(isEmptyReview(result)).toBe(true);
+    expect(result.skillsCreated).toBe(0);
+    expect(result.actionsLog).toBeUndefined();
+  });
+
+  // G5 timeout test — DEFERRED to 4.3.e.
+  // Attempted: vi.useFakeTimers + vi.advanceTimersByTimeAsync(61_000) with a
+  // pending session.prompt() Promise. Both never-resolve and setTimeout-based
+  // variants hang under fake timers — the interaction between Promise.race,
+  // the outer await, and vitest's microtask draining didn't release.
+  // Hookable alternatives that would require new prod seams (e.g., a
+  // timeoutMs override in SkillReviewDeps, or an injectable setTimeout)
+  // are out of scope for d.3. Real-time wait (60s real) is wasteful.
+  // 4.3.e end-to-end with real LLM exercises the timeout naturally.
+  it.skip("G5: returns EMPTY_REVIEW_RESULT when prompt exceeds 60s timeout (deferred to 4.3.e)", () => {});
+});
