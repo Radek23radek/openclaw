@@ -16,11 +16,16 @@ afterEach(() => {
   resetLearningReviewCountersForTest();
 });
 
+// Casts use `as unknown as AgentMessage` because pi-coding-agent's runtime
+// stopReason values ("end_turn", "tool_use") and minimal message shapes
+// don't satisfy pi-ai's stricter AssistantMessage type (which requires
+// api/provider/model/usage and a StopReason enum subset). See
+// PORT_PLAN_4_3.md "Type discrepancy" for the full discovery.
 function userMsg(content: string): AgentMessage {
-  return { role: "user", content, timestamp: 0 } as AgentMessage;
+  return { role: "user", content, timestamp: 0 } as unknown as AgentMessage;
 }
 function assistantText(content: string, stopReason: string = "end_turn"): AgentMessage {
-  return { role: "assistant", content, timestamp: 0, stopReason } as AgentMessage;
+  return { role: "assistant", content, timestamp: 0, stopReason } as unknown as AgentMessage;
 }
 function assistantWithToolUse(stopReason: string = "tool_use"): AgentMessage {
   return {
@@ -28,7 +33,7 @@ function assistantWithToolUse(stopReason: string = "tool_use"): AgentMessage {
     content: [{ type: "tool_use", id: "tu_1", name: "Read", input: {} }],
     timestamp: 0,
     stopReason,
-  } as AgentMessage;
+  } as unknown as AgentMessage;
 }
 
 const enabledConfig: OpenClawConfig = { learning: { enabled: true, nudgeInterval: 5 } };

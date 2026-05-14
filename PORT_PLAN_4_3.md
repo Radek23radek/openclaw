@@ -703,6 +703,33 @@ recreates the session while pi-coding-agent's retry is mid-attempt).
 
 Updated b.2 R-auth comment to reflect this discovery.
 
+### Type discrepancy: pi-coding-agent runtime vs pi-ai typed enums
+
+Discovered during 4.3.c.1 test-file recon.
+
+pi-ai `types.d.ts:144` defines `AssistantMessage.stopReason` as enum:
+`"stop" | "length" | "toolUse" | "error" | "aborted"`
+
+pi-coding-agent emits at runtime: `"end_turn"`, `"tool_use"` (snake_case).
+
+Production code (`learning-review-trigger.ts:65-66`) handles via defensive cast:
+
+```ts
+const stopReason = (last as { stopReason?: unknown }).stopReason;
+if (stopReason !== "end_turn") return false;
+```
+
+Test helpers use `as unknown as AgentMessage` for the same reason — cannot
+satisfy strict pi-ai types with realistic pi-coding-agent values without
+stubbing all required `AssistantMessage` fields (`api`, `provider`, `model`,
+`usage`) on every fixture.
+
+This is not a bug — it's an asymmetry between SDK type definitions and
+actual runtime behavior. Casting is the pragmatic mitigation.
+
+**Future Etap 5 cleanup**: file pi-coding-agent issue upstream OR contribute
+corrected types.
+
 ### Future telemetry (Etap 5, not 4.3)
 
 Subscribe to `auto_retry_start`/`auto_retry_end` events for resilience
