@@ -222,6 +222,9 @@ describe("scheduleLearningReviewIfDue — async, non-blocking", () => {
     expect(reviewFinishedAt).toBe(0); // reviewFn has not finished yet
 
     await vi.waitFor(() => expect(reviewFinishedAt).toBeGreaterThan(0));
-    expect(reviewFinishedAt).toBeGreaterThanOrEqual(returnedAt + 10);
+    // Allow 1ms slop: Date.now() has 1ms granularity and truncates, so a
+    // boundary tick between returnedAt and reviewFinishedAt can shave 1ms
+    // off the observed delay even when setTimeout(10) waits its full duration.
+    expect(reviewFinishedAt).toBeGreaterThanOrEqual(returnedAt + 9);
   });
 });
