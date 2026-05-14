@@ -156,6 +156,12 @@ export type SkillReviewDeps = {
   promptOverride?: string;
   /** Test seam — overrides Date.now (4.3.d uses this for timing assertions). */
   now?: () => number;
+  /**
+   * Test seam — overrides the createAgentSession factory so tests can inject
+   * a fake AgentSession (4.3.d). Production leaves this undefined and the
+   * real `createAgentSession` from pi-coding-agent is used.
+   */
+  createSession?: typeof createAgentSession;
 };
 
 /** G8: format check for learning.reviewModel — "<provider>/<model_id>". */
@@ -381,7 +387,7 @@ export async function runSkillReview(
     // auto_retry_start/auto_retry_end events.
     // Auth errors that ARE NOT retryable propagate as exceptions →
     // caught by G7 outer try/catch in runSkillReview → EMPTY_REVIEW_RESULT.
-    const { session } = await createAgentSession({
+    const { session } = await (deps?.createSession ?? createAgentSession)({
       cwd: tmpdir(),
       agentDir: context.agentDir,
       model,
