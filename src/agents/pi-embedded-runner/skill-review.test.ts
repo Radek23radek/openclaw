@@ -458,3 +458,65 @@ describe("runSkillReview — sandbox configuration (4.3.d.4)", () => {
     expect(opts.sessionManager?.isPersisted()).toBe(false);
   });
 });
+
+// ===========================================================================
+// Auth + model resolution (4.3.d.5)
+// ===========================================================================
+// Auth check (G9) runs before createSession; model resolution (G8 + "auto")
+// runs in resolveReviewModel and feeds the model option. Behavioral
+// assertions only — log.warn output is a side effect we deliberately do
+// not capture (consistent with d.3 discipline).
+
+describe("runSkillReview — auth + model resolution (4.3.d.5)", () => {
+  it("G9: returns EMPTY_REVIEW_RESULT when resolveAuth rejects (createSession never called)", async () => {
+    const mock = makeMockSession({ toolCalls: [] });
+    const createSession = vi.fn(makeMockCreateSession(mock));
+    // Manual cast mirrors d.3 G7's failingCreateSession pattern — avoids
+    // taking a dependency on vi.fn<T>() generic syntax variance across
+    // Vitest versions while still typechecking under tsgo.
+    const failingAuth = (async () => {
+      throw new Error("no api key for provider anthropic");
+    }) as unknown as typeof import("../model-auth.js").getApiKeyForModel;
+
+    const result = await runSkillReview(makeMockMessages(), makeReviewContext(), {
+      createSession,
+      resolveAuth: failingAuth,
+    });
+
+    expect(isEmptyReview(result)).toBe(true);
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("G8: falls back to parentModel when reviewModel format is invalid", async () => {
+    const mock = makeMockSession({ toolCalls: [] });
+    const createSession = vi.fn(makeMockCreateSession(mock));
+    const context = makeReviewContext({
+      config: { learning: { enabled: true, reviewModel: "not-a-valid-spec" } },
+    });
+
+    await runSkillReview(makeMockMessages(), context, {
+      createSession,
+      resolveAuth: resolveAuthOk,
+    });
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+    const opts = createSession.mock.calls[0]?.[0] as CreateAgentSessionOptions;
+    expect(opts.model).toBe(context.parentModel);
+  });
+
+  it('resolves reviewModel "auto" to parentModel', async () => {
+    const mock = makeMockSession({ toolCalls: [] });
+    const createSession = vi.fn(makeMockCreateSession(mock));
+    const context = makeReviewContext({
+      config: { learning: { enabled: true, reviewModel: "auto" } },
+    });
+
+    await runSkillReview(makeMockMessages(), context, {
+      createSession,
+      resolveAuth: resolveAuthOk,
+    });
+
+    const opts = createSession.mock.calls[0]?.[0] as CreateAgentSessionOptions;
+    expect(opts.model).toBe(context.parentModel);
+  });
+});
