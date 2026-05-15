@@ -18,8 +18,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getRuntimeConfig } from "../../config/config.js";
+import { resolveDefaultAgentDir } from "../agent-scope.js";
 import { isLiveTestEnabled } from "../live-test-helpers.js";
+import { ensureOpenClawModelsJson } from "../models-config.js";
+import { discoverAuthStorage, discoverModels } from "../pi-model-discovery.js";
 import { runAsBackgroundReview } from "../skills/skill-provenance.js";
 import type { LearningMessage } from "./learning-review.js";
 import type { ReviewResult } from "./skill-review-types.js";
@@ -49,6 +53,30 @@ const LIVE_TIMEOUT_MS = Number(process.env.OPENCLAW_LIVE_TEST_TIMEOUT_MS ?? 120_
 
 const REAL_AGENT_DIR = path.join(os.homedir(), ".openclaw", "agents", "main", "agent");
 
+// Scenario C target. gpt-5.1-codex-mini matches the existing
+// openai-reasoning-compat.live.test.ts default — small/fast/cheap subset of
+// ChatGPT Plus OAuth quota. Env override lets us swap to a heavier model
+// (e.g. gpt-5.1-codex) without touching the file.
+const DEFAULT_SKILL_REVIEW_MODEL = "openai-codex/gpt-5.1-codex-mini";
+const TARGET_MODEL_REF =
+  process.env.OPENCLAW_LIVE_SKILL_REVIEW_MODEL?.trim() || DEFAULT_SKILL_REVIEW_MODEL;
+
+function logProgress(message: string): void {
+  process.stderr.write(`[live][skill-review] ${message}\n`);
+}
+
+/**
+ * Known live blockers — model-side conditions that should skip the test
+ * silently rather than fail it. Patterns copied from
+ * openai-reasoning-compat.live.test.ts:101-106.
+ */
+function isKnownLiveBlocker(errorMessage: string): boolean {
+  return (
+    /not supported when using codex with a chatgpt account/i.test(errorMessage) ||
+    /hit your chatgpt usage limit/i.test(errorMessage)
+  );
+}
+
 /**
  * Returns true when the user has at least one auth profile whose key
  * starts with the given prefix (e.g. "openai-codex:" matches the
@@ -72,46 +100,97 @@ function hasProfile(prefix: string): boolean {
 }
 
 /**
- * Placeholder transcript — full "ślepy zaułek" content lands in e.2
- * where it can be tuned against the actual primary scenario (Codex).
- * Kept here only so runReviewLive typechecks and runs without crashing
- * in a hypothetical e.1-only invocation.
+ * "Ślepy zaułek" transcript — user asks for a file that doesn't exist;
+ * the assistant chains three searches before realising and ends the
+ * exchange with an explicit lesson ("verify file exists with one stat
+ * before chaining recursive finds"). Final assistant message states
+ * the takeaway directly so the review model has unambiguous lesson
+ * material in pure text (tool blocks are filtered by
+ * learning-review-trigger.toLearningMessages in prod — only
+ * user/assistant text survives, so simulated tool output is rendered
+ * as user-quoted text rather than structured blocks).
  */
 function syntheticTranscript(): LearningMessage[] {
   return [
-    { role: "user", content: "placeholder — full transcript wired in 4.3.e.2" },
-    { role: "assistant", content: "placeholder" },
+    {
+      role: "user",
+      content:
+        "Find the file PROJECT_HISTORY.md in this repo and tell me the date of its first entry.",
+    },
+    {
+      role: "assistant",
+      content:
+        "I'll look for PROJECT_HISTORY.md. Starting with `ls PROJECT_HISTORY.md` in the working directory.",
+    },
+    {
+      role: "user",
+      content:
+        "The command returned: ls: cannot access 'PROJECT_HISTORY.md': No such file or directory",
+    },
+    {
+      role: "assistant",
+      content: "Not in cwd. Trying a recursive find: `find . -name PROJECT_HISTORY.md`.",
+    },
+    {
+      role: "user",
+      content: "find returned no matches.",
+    },
+    {
+      role: "assistant",
+      content:
+        "Maybe the casing or extension is off. Trying a broader pattern: `find . -iname '*HISTORY*'`.",
+    },
+    {
+      role: "user",
+      content: "Match: ./CHANGELOG.md. No PROJECT_HISTORY.md anywhere in the tree.",
+    },
+    {
+      role: "assistant",
+      content:
+        "PROJECT_HISTORY.md does not exist in this repository. I should have started by verifying the file exists with one cheap `stat` or `ls` before chaining searches — the three retries were avoidable. Could you confirm the filename, or did you mean CHANGELOG.md?",
+    },
+    {
+      role: "user",
+      content: "Right, my mistake — I meant CHANGELOG.md. Skip this one, we're done.",
+    },
+    {
+      role: "assistant",
+      content:
+        "Acknowledged. Technique for next time: when a user references a specific file by name, run one `stat` or `ls` first to confirm existence; if it isn't there, ask for clarification rather than escalating to broader recursive searches. That would have saved 3 wasted commands here.",
+    },
   ];
 }
 
 /**
  * Live review runner — Option B (direct runSkillReview, no full
- * attempt.ts loop). Used by every scenario in this file.
+ * attempt.ts loop). agentDir is supplied by the caller so the test
+ * body can route through resolveDefaultAgentDir(cfg) and match the
+ * registry/auth-storage it built the Model against.
  *
- * agentDir points at REAL_AGENT_DIR (OQ-1 decision): the review session
- * uses SessionManager.inMemory() and noTools: "builtin", so the only
- * thing that touches agentDir is the read-side of getApiKeyForModel.
- * OAuth token refresh is allowed to write back through prod auth-storage
- * locking — desired behavior parity with the real learning loop.
+ * The review session uses SessionManager.inMemory() and
+ * noTools: "builtin", so the only thing that touches agentDir is the
+ * read-side of getApiKeyForModel. OAuth token refresh is allowed to
+ * write back through prod auth-storage locking — desired behavior
+ * parity with the real learning loop.
  *
- * workspaceDir is a fresh tmpdir per call so that any workspace-scoped
+ * workspaceDir is a fresh tmpdir per call so any workspace-scoped
  * side effects stay quarantined.
  */
 async function runReviewLive(opts: {
   model: Model<Api>;
+  agentDir: string;
+  transcript: LearningMessage[];
 }): Promise<{ result: ReviewResult; duration: number }> {
   const tmpWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "skill-review-ws-"));
   try {
     const context: SkillReviewContext = {
-      agentDir: REAL_AGENT_DIR,
+      agentDir: opts.agentDir,
       workspaceDir: tmpWorkspace,
       config: { learning: { enabled: true } },
       parentModel: opts.model,
     };
     const start = Date.now();
-    const result = await runAsBackgroundReview(() =>
-      runSkillReview(syntheticTranscript(), context),
-    );
+    const result = await runAsBackgroundReview(() => runSkillReview(opts.transcript, context));
     return { result, duration: Date.now() - start };
   } finally {
     fs.rmSync(tmpWorkspace, { recursive: true, force: true });
@@ -128,12 +207,88 @@ describeLive("learning loop end-to-end smoke (4.3.e)", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // Body lands in 4.3.e.2: build a Codex Model<Api>, runReviewLive with the
-  // full ślepy-zaułek transcript, assert skills/ has >= 1 SKILL.md with
-  // valid frontmatter, tokensIn > 0, duration < 90s.
-  it.todo(`scenario C — OAuth OpenAI Codex (PRIMARY) [codex_oauth=${CODEX_OAUTH}]`);
+  it.skipIf(!CODEX_OAUTH)(
+    "scenario C — OAuth OpenAI Codex (PRIMARY)",
+    async () => {
+      const cfg = getRuntimeConfig();
+      await ensureOpenClawModelsJson(cfg);
+      const agentDir = resolveDefaultAgentDir(cfg);
+      const authStorage = discoverAuthStorage(agentDir);
+      const modelRegistry = discoverModels(authStorage, agentDir);
 
-  // Suppress unused-symbol warnings for helpers exercised only by e.2/e.4.
-  void runReviewLive;
-  void LIVE_TIMEOUT_MS;
+      const [provider, ...rest] = TARGET_MODEL_REF.split("/");
+      const modelId = rest.join("/").trim();
+      if (!provider?.trim() || !modelId) {
+        throw new Error(
+          `Invalid OPENCLAW_LIVE_SKILL_REVIEW_MODEL: ${JSON.stringify(TARGET_MODEL_REF)}`,
+        );
+      }
+      const model = modelRegistry.find(provider, modelId) as Model<Api> | null;
+      if (!model) {
+        logProgress(`model missing from registry: ${TARGET_MODEL_REF}`);
+        return;
+      }
+
+      logProgress(`target=${TARGET_MODEL_REF} agentDir=${agentDir}`);
+
+      let liveResult: { result: ReviewResult; duration: number };
+      try {
+        liveResult = await runReviewLive({
+          model,
+          agentDir,
+          transcript: syntheticTranscript(),
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (isKnownLiveBlocker(msg)) {
+          logProgress(`skip (${msg})`);
+          return;
+        }
+        throw err;
+      }
+
+      const { result, duration } = liveResult;
+
+      // Always log result + actionsLog to stderr (OQ-E) — surfaces the
+      // review's decisions for post-mortem on first runs and on failures.
+      process.stderr.write(
+        `[live][skill-review] duration=${duration}ms ` +
+          `tokensIn=${result.tokensIn} tokensOut=${result.tokensOut} ` +
+          `skillsCreated=${result.skillsCreated} ` +
+          `skillsUpdated=${result.skillsUpdated} ` +
+          `skillsDeleted=${result.skillsDeleted} ` +
+          `actionsLog=${JSON.stringify(result.actionsLog ?? [], null, 2)}\n`,
+      );
+
+      expect(duration).toBeLessThan(90_000);
+      expect(result.tokensIn).toBeGreaterThan(0);
+      expect(result.tokensOut).toBeGreaterThan(0);
+
+      const totalMutations = result.skillsCreated + result.skillsUpdated + result.skillsDeleted;
+      if (totalMutations === 0 && result.tokensIn > 0) {
+        process.stderr.write(
+          `[live][skill-review] WARN: model returned end_turn without skill ` +
+            `mutations (tokensIn=${result.tokensIn}). Transcript may be too ` +
+            `soft for this model. Failing assertion to enforce smoke contract.\n`,
+        );
+      }
+      expect(totalMutations).toBeGreaterThanOrEqual(1);
+
+      const skillsDir = path.join(tmpDir, "skills");
+      const skillNames = fs.readdirSync(skillsDir);
+      expect(skillNames.length).toBeGreaterThanOrEqual(1);
+
+      const firstSkillName = skillNames[0];
+      expect(firstSkillName).toBeDefined();
+      const firstSkillFile = path.join(skillsDir, firstSkillName!, "SKILL.md");
+      expect(fs.existsSync(firstSkillFile)).toBe(true);
+
+      const content = fs.readFileSync(firstSkillFile, "utf8");
+      expect(content).toMatch(/^---\n/);
+      expect(content).toMatch(/name:\s*\S+/);
+      expect(content).toMatch(/description:\s*\S+/);
+      expect(content).toMatch(/agent_created:\s*true/);
+    },
+    LIVE_TIMEOUT_MS,
+  );
 });
