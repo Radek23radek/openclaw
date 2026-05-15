@@ -9,10 +9,11 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type {
-  CreateAgentSessionOptions,
-  CreateAgentSessionResult,
-  ToolDefinition,
+import {
+  SessionManager,
+  type CreateAgentSessionOptions,
+  type CreateAgentSessionResult,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runAsBackgroundReview } from "../skills/skill-provenance.js";
@@ -401,4 +402,59 @@ describe("runSkillReview — guardrails + defensive (4.3.d.3)", () => {
   // are out of scope for d.3. Real-time wait (60s real) is wasteful.
   // 4.3.e end-to-end with real LLM exercises the timeout naturally.
   it.skip("G5: returns EMPTY_REVIEW_RESULT when prompt exceeds 60s timeout (deferred to 4.3.e)", () => {});
+});
+
+// ===========================================================================
+// Sandbox configuration assertions (4.3.d.4)
+// ===========================================================================
+// These inspect the options object passed to createAgentSession. Behavioral
+// enforcement (e.g. that builtin tools really are blocked when noTools:
+// "builtin", or that an in-memory session really writes nothing to disk)
+// belongs to 4.3.e end-to-end against the real pi-coding-agent runtime.
+
+describe("runSkillReview — sandbox configuration (4.3.d.4)", () => {
+  it("configures pi-coding-agent with noTools: builtin", async () => {
+    const mock = makeMockSession({ toolCalls: [] });
+    const createSession = vi.fn(makeMockCreateSession(mock));
+
+    await runSkillReview(makeMockMessages(), makeReviewContext(), {
+      createSession,
+      resolveAuth: resolveAuthOk,
+    });
+
+    expect(createSession).toHaveBeenCalledTimes(1);
+    const opts = createSession.mock.calls[0]?.[0] as CreateAgentSessionOptions;
+    expect(opts.noTools).toBe("builtin");
+  });
+
+  it("passes exactly one customTool named skill_manage", async () => {
+    const mock = makeMockSession({ toolCalls: [] });
+    const createSession = vi.fn(makeMockCreateSession(mock));
+
+    await runSkillReview(makeMockMessages(), makeReviewContext(), {
+      createSession,
+      resolveAuth: resolveAuthOk,
+    });
+
+    const opts = createSession.mock.calls[0]?.[0] as CreateAgentSessionOptions;
+    expect(opts.customTools).toHaveLength(1);
+    expect(opts.customTools?.[0]?.name).toBe("skill_manage");
+  });
+
+  it("uses non-persistent SessionManager for review session", async () => {
+    // Kombo: instanceof guards against duck-typed fakes; isPersisted() is the
+    // public 1:1 marker for inMemory() vs. create()/open()/continueRecent()/
+    // forkFrom() (all of which set persist=true). See session-manager.js:1003.
+    const mock = makeMockSession({ toolCalls: [] });
+    const createSession = vi.fn(makeMockCreateSession(mock));
+
+    await runSkillReview(makeMockMessages(), makeReviewContext(), {
+      createSession,
+      resolveAuth: resolveAuthOk,
+    });
+
+    const opts = createSession.mock.calls[0]?.[0] as CreateAgentSessionOptions;
+    expect(opts.sessionManager).toBeInstanceOf(SessionManager);
+    expect(opts.sessionManager?.isPersisted()).toBe(false);
+  });
 });
