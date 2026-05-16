@@ -3,6 +3,9 @@
 Date: 2026-05-12
 Scope: skill-only review (memory/profile out per user constraint — Etap 5)
 Source: `research/hermes/run_agent.py` (`_SKILL_REVIEW_PROMPT`, `_spawn_background_review`)
+Status: **Stage 4.3 COMPLETE (2026-05-16)** — all sub-stages a/b/c/d/e shipped.
+Live smoke test green on Codex OAuth + DeepSeek API key. Runbook:
+`LEARNING_LOOP_SMOKE.md`. Six implementation findings below.
 
 ---
 
@@ -769,3 +772,40 @@ consistently uncovers latent issues — keep doing the recon-before-code step.
 
 Subscribe to `auto_retry_start`/`auto_retry_end` events for resilience
 observability — separate from b.5 cost telemetry (`tokensIn`/`tokensOut`).
+
+### 4.3.e live smoke test — six findings
+
+Bringing the live smoke test (`skill-review.live.test.ts`) green surfaced
+six issues that the mock-based 4.3.d suite could not see. Two were real
+production bugs. Detail in commit history; runbook in `LEARNING_LOOP_SMOKE.md`.
+
+1. **HOME isolation** (e.2 diagnostyka) — `test/test-env.ts:installTestEnv`
+   isolates `HOME` to a tmpdir for every test, hiding the real auth
+   profiles under `~/.openclaw/`. The live test must set
+   `OPENCLAW_LIVE_USE_REAL_HOME=1` (with `OPENCLAW_LIVE_TEST=1`) to keep
+   the real `HOME`.
+2. **Global OAuth mock** (e.2 diagnostyka) — `test/setup.shared.ts` mocks
+   `@earendil-works/pi-ai/oauth` for all tests. Investigated as a suspect;
+   `vi.unmock` confirmed it was NOT the live-auth blocker.
+3. **Auth bridge gap** (e.2.a — FIXED, `eeddcb0fe2`) — `runSkillReview`
+   left `authStorage`/`modelRegistry` to the pi-coding-agent defaults,
+   which resolve to an empty `agentDir/auth.json`. The production learning
+   loop had been silently returning `EMPTY_REVIEW_RESULT` via the G7 catch
+   since the 4.3.c.5 wire-up. Fixed by threading the parent agent's live
+   `AuthStorage` (runtime API key already injected) + `ModelRegistry`
+   through `SkillReviewContext`.
+4. **accountId is profile-specific** (e.2.b) — pi-ai's `getAccountId`
+   decodes the OAuth JWT for a `chatgpt_account_id` claim. The
+   Codex-CLI-synced `openai-codex:default` profile carries it; an
+   OpenClaw-native-login profile does not. A duplicate broken profile was
+   cleaned from the local `auth-profiles.json`.
+5. **ChatGPT-account model availability** (e.2.b) — Codex OAuth serves
+   only a fixed model set (`~/.codex/models_cache.json`). `gpt-5.1-codex-mini`
+   is rejected; the scenario target switched to `gpt-5.4-mini`.
+6. **Provenance merge gap** (e.2.c — FIXED, `802399b4b5`) —
+   `skill_manage` `createSkill`/`updateSkill` wrote model-supplied content
+   verbatim when it began with `---`, discarding the generated frontmatter
+   including the `agent_created` provenance flag. A real LLM always writes
+   its own frontmatter. Fixed with the `composeSkillFile` helper: model
+   frontmatter merges with our fields — provenance fields always ours,
+   content fields (name/description/version/platforms/extras) the model's.
