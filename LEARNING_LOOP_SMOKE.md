@@ -31,16 +31,19 @@ HOME=$HOME OPENCLAW_LIVE_TEST=1 OPENCLAW_LIVE_USE_REAL_HOME=1 \
 
 ## 3. Environment variables
 
-| Variable                           | Required | Default                     | Description                                                                                                                                                   |
-| ---------------------------------- | -------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OPENCLAW_LIVE_TEST` (or `LIVE`)   | yes      | —                           | Gates the whole `describe` block. Unset → entire file skipped.                                                                                                |
-| `OPENCLAW_LIVE_USE_REAL_HOME`      | yes      | —                           | Keeps the real `HOME`. Without it the shared test setup (`test/test-env.ts`) isolates `HOME` to a tmpdir, hiding the real auth profiles under `~/.openclaw/`. |
-| `OPENCLAW_LIVE_SKILL_REVIEW_MODEL` | no       | `openai-codex/gpt-5.4-mini` | Target model ref (`<provider>/<model>`).                                                                                                                      |
-| `OPENCLAW_LIVE_TEST_TIMEOUT_MS`    | no       | `120000`                    | Per-test timeout.                                                                                                                                             |
+| Variable                                    | Required       | Default                     | Description                                                                                                                                                   |
+| ------------------------------------------- | -------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENCLAW_LIVE_TEST` (or `LIVE`)            | yes            | —                           | Gates the whole `describe` block. Unset → entire file skipped.                                                                                                |
+| `OPENCLAW_LIVE_USE_REAL_HOME`               | yes            | —                           | Keeps the real `HOME`. Without it the shared test setup (`test/test-env.ts`) isolates `HOME` to a tmpdir, hiding the real auth profiles under `~/.openclaw/`. |
+| `OPENCLAW_LIVE_SKILL_REVIEW_MODEL`          | no             | `openai-codex/gpt-5.4-mini` | Scenario C (Codex) model ref (`<provider>/<model>`).                                                                                                          |
+| `DEEPSEEK_API_KEY`                          | for Scenario D | —                           | DeepSeek API key. Presence gates Scenario D. Set via `export`, never committed.                                                                               |
+| `OPENCLAW_LIVE_SKILL_REVIEW_DEEPSEEK_MODEL` | no             | `deepseek/deepseek-chat`    | Scenario D model ref.                                                                                                                                         |
+| `OPENCLAW_LIVE_TEST_TIMEOUT_MS`             | no             | `120000`                    | Per-test timeout.                                                                                                                                             |
+| `OPENCLAW_LIVE_DUMP_SKILL`                  | no             | —                           | When `1`, dumps each generated `SKILL.md` body to stderr (skill-quality comparison across models).                                                            |
 
-Both gate variables are mandatory together: `OPENCLAW_LIVE_TEST=1` alone runs
-the suite but cannot see the real auth profiles, so the scenario silently
-skips.
+Both gate variables (`OPENCLAW_LIVE_TEST` + `OPENCLAW_LIVE_USE_REAL_HOME`) are
+mandatory together: `OPENCLAW_LIVE_TEST=1` alone runs the suite but cannot see
+the real auth profiles, so the scenario silently skips.
 
 ## 4. Scenario C — Codex OAuth (primary)
 
@@ -89,18 +92,62 @@ cp auth-profiles.json auth-profiles.json.bak     # back up first
 Re-running `codex login` (browser flow, or `codex login --device-auth`
 headless) refreshes the Codex CLI credentials that `:default` syncs from.
 
-## 5. Scenario D — DeepSeek (pro-forma)
+## 5. Scenario D — DeepSeek (API key)
 
-> **Status: planned.** This section is pro-forma — the full procedure is
-> validated by a later smoke run (port step 4.3.e.4). DeepSeek is an API-key
-> provider, so it sidesteps the OAuth/accountId constraints of Scenario C.
+DeepSeek is an API-key provider, so it sidesteps the OAuth/accountId
+constraints of Scenario C. It also exercises the learning loop against a
+non-Codex model, confirming the review path generalizes.
 
-Expected shape once implemented:
+### Pre-conditions
 
-- Set `DEEPSEEK_API_KEY` in the environment (or `~/.profile`).
-- Select a DeepSeek model via `OPENCLAW_LIVE_SKILL_REVIEW_MODEL`
-  (e.g. `deepseek/deepseek-chat`).
-- Cost: roughly `$0.001–0.003` per run (per-token, not flat).
+- A DeepSeek API key from <https://platform.deepseek.com>.
+- A `deepseek` provider entry in `~/.openclaw/agents/<agentId>/agent/models.json`
+  (the smoke test resolves the model via `discoverModels` → `registry.find`,
+  which reads `models.json`). Add it under `providers`:
+
+  ```json
+  "deepseek": {
+    "baseUrl": "https://api.deepseek.com",
+    "api": "openai-completions",
+    "apiKey": "DEEPSEEK_API_KEY",
+    "models": [
+      {
+        "id": "deepseek-chat",
+        "name": "DeepSeek Chat",
+        "reasoning": false,
+        "input": ["text"],
+        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+        "contextWindow": 131072,
+        "maxTokens": 8192
+      }
+    ]
+  }
+  ```
+
+  Note `"apiKey": "DEEPSEEK_API_KEY"` — this is the **name of the env var**,
+  not the key itself. The key is never written to a file; it is resolved
+  from the environment by `getApiKeyForModel`.
+
+- Export the key in your shell (never commit it):
+
+  ```bash
+  export DEEPSEEK_API_KEY=<YOUR_DEEPSEEK_KEY>
+  ```
+
+### Run
+
+```bash
+HOME=$HOME OPENCLAW_LIVE_TEST=1 OPENCLAW_LIVE_USE_REAL_HOME=1 \
+  pnpm test:live src/agents/pi-embedded-runner/skill-review.live.test.ts
+```
+
+Scenario D runs when `DEEPSEEK_API_KEY` is set; otherwise it skips. Override
+the model with `OPENCLAW_LIVE_SKILL_REVIEW_DEEPSEEK_MODEL`
+(default `deepseek/deepseek-chat`).
+
+### Cost
+
+Roughly `$0.001–0.003` per run — per-token (not flat like Codex OAuth).
 
 ## 6. Expected output
 

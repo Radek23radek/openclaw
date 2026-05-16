@@ -34,6 +34,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRuntimeConfig } from "../../config/config.js";
 import { resolveDefaultAgentDir } from "../agent-scope.js";
 import { isLiveTestEnabled } from "../live-test-helpers.js";
+import { getApiKeyForModel } from "../model-auth.js";
 import { ensureOpenClawModelsJson } from "../models-config.js";
 import { discoverAuthStorage, discoverModels } from "../pi-model-discovery.js";
 import { runAsBackgroundReview } from "../skills/skill-provenance.js";
@@ -71,9 +72,15 @@ const REAL_AGENT_DIR = path.join(os.homedir(), ".openclaw", "agents", "main", "a
 //   gpt-5.4-mini (default, smallest/fastest), gpt-5.4, gpt-5.3-codex,
 //   gpt-5.2, codex-auto-review
 //   Override via OPENCLAW_LIVE_SKILL_REVIEW_MODEL env var.
-const DEFAULT_SKILL_REVIEW_MODEL = "openai-codex/gpt-5.4-mini";
-const TARGET_MODEL_REF =
-  process.env.OPENCLAW_LIVE_SKILL_REVIEW_MODEL?.trim() || DEFAULT_SKILL_REVIEW_MODEL;
+const DEFAULT_CODEX_MODEL = "openai-codex/gpt-5.4-mini";
+const CODEX_MODEL_REF = process.env.OPENCLAW_LIVE_SKILL_REVIEW_MODEL?.trim() || DEFAULT_CODEX_MODEL;
+
+// Scenario D target. DeepSeek is an API-key provider; the deepseek provider
+// must exist in models.json (see LEARNING_LOOP_SMOKE.md §5). Override via
+// OPENCLAW_LIVE_SKILL_REVIEW_DEEPSEEK_MODEL env var.
+const DEFAULT_DEEPSEEK_MODEL = "deepseek/deepseek-chat";
+const DEEPSEEK_MODEL_REF =
+  process.env.OPENCLAW_LIVE_SKILL_REVIEW_DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
 
 function logProgress(message: string): void {
   process.stderr.write(`[live][skill-review] ${message}\n`);
@@ -81,13 +88,17 @@ function logProgress(message: string): void {
 
 /**
  * Known live blockers — model-side conditions that should skip the test
- * silently rather than fail it. Patterns copied from
- * openai-reasoning-compat.live.test.ts:101-106.
+ * silently rather than fail it. Codex patterns from
+ * openai-reasoning-compat.live.test.ts:101-106; the rate-limit / quota /
+ * balance patterns cover both Codex and DeepSeek (API-key) exhaustion.
  */
 function isKnownLiveBlocker(errorMessage: string): boolean {
   return (
     /not supported when using codex with a chatgpt account/i.test(errorMessage) ||
-    /hit your chatgpt usage limit/i.test(errorMessage)
+    /hit your chatgpt usage limit/i.test(errorMessage) ||
+    /rate.?limit/i.test(errorMessage) ||
+    /quota.?exceeded/i.test(errorMessage) ||
+    /insufficient.?balance/i.test(errorMessage)
   );
 }
 
@@ -119,6 +130,9 @@ function hasProfile(prefix: string): boolean {
 // swallowed by the function's try/catch and CODEX_OAUTH silently
 // evaluates to false — masking real auth state.
 const CODEX_OAUTH = LIVE && hasProfile("openai-codex:");
+
+// Scenario D gate — DeepSeek uses an env-var API key, not an auth profile.
+const DEEPSEEK = LIVE && Boolean(process.env.DEEPSEEK_API_KEY);
 
 /**
  * "Ślepy zaułek" transcript — user asks for a file that doesn't exist;
@@ -222,6 +236,66 @@ async function runReviewLive(opts: {
   }
 }
 
+/**
+ * Shared assertion block for a live review run. Logs the result to stderr
+ * (post-mortem), then asserts the smoke contract: real LLM call, at least
+ * one skill written, valid frontmatter with the agent_created provenance
+ * flag. Set OPENCLAW_LIVE_DUMP_SKILL=1 to also dump each SKILL.md body —
+ * useful for comparing skill quality across models/scenarios.
+ */
+function assertHealthyReview(liveResult: { result: ReviewResult; duration: number }): void {
+  const { result, duration } = liveResult;
+
+  process.stderr.write(
+    `[live][skill-review] duration=${duration}ms ` +
+      `tokensIn=${result.tokensIn} tokensOut=${result.tokensOut} ` +
+      `skillsCreated=${result.skillsCreated} ` +
+      `skillsUpdated=${result.skillsUpdated} ` +
+      `skillsDeleted=${result.skillsDeleted} ` +
+      `actionsLog=${JSON.stringify(result.actionsLog ?? [], null, 2)}\n`,
+  );
+
+  expect(duration).toBeLessThan(90_000);
+  expect(result.tokensIn).toBeGreaterThan(0);
+  expect(result.tokensOut).toBeGreaterThan(0);
+
+  const totalMutations = result.skillsCreated + result.skillsUpdated + result.skillsDeleted;
+  if (totalMutations === 0 && result.tokensIn > 0) {
+    process.stderr.write(
+      `[live][skill-review] WARN: model returned end_turn without skill ` +
+        `mutations (tokensIn=${result.tokensIn}). Transcript may be too ` +
+        `soft for this model. Failing assertion to enforce smoke contract.\n`,
+    );
+  }
+  expect(totalMutations).toBeGreaterThanOrEqual(1);
+
+  const skillsDir = path.join(tmpDir, "skills");
+  const skillNames = fs.readdirSync(skillsDir);
+  expect(skillNames.length).toBeGreaterThanOrEqual(1);
+
+  const firstSkillName = skillNames[0];
+  expect(firstSkillName).toBeDefined();
+  const firstSkillFile = path.join(skillsDir, firstSkillName!, "SKILL.md");
+  expect(fs.existsSync(firstSkillFile)).toBe(true);
+
+  const content = fs.readFileSync(firstSkillFile, "utf8");
+  if (process.env.OPENCLAW_LIVE_DUMP_SKILL === "1") {
+    for (const name of skillNames) {
+      const file = path.join(skillsDir, name, "SKILL.md");
+      if (fs.existsSync(file)) {
+        process.stderr.write(
+          `[live][skill-review] ===== ${name}/SKILL.md =====\n` +
+            `${fs.readFileSync(file, "utf8")}\n[live][skill-review] ===== end =====\n`,
+        );
+      }
+    }
+  }
+  expect(content).toMatch(/^---\n/);
+  expect(content).toMatch(/name:\s*\S+/);
+  expect(content).toMatch(/description:\s*\S+/);
+  expect(content).toMatch(/agent_created:\s*true/);
+}
+
 describeLive("learning loop end-to-end smoke (4.3.e)", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "skill-review-smoke-"));
@@ -241,20 +315,88 @@ describeLive("learning loop end-to-end smoke (4.3.e)", () => {
       const authStorage = discoverAuthStorage(agentDir);
       const modelRegistry = discoverModels(authStorage, agentDir);
 
-      const [provider, ...rest] = TARGET_MODEL_REF.split("/");
+      const [provider, ...rest] = CODEX_MODEL_REF.split("/");
       const modelId = rest.join("/").trim();
       if (!provider?.trim() || !modelId) {
         throw new Error(
-          `Invalid OPENCLAW_LIVE_SKILL_REVIEW_MODEL: ${JSON.stringify(TARGET_MODEL_REF)}`,
+          `Invalid OPENCLAW_LIVE_SKILL_REVIEW_MODEL: ${JSON.stringify(CODEX_MODEL_REF)}`,
         );
       }
       const model = modelRegistry.find(provider, modelId) as Model<Api> | null;
       if (!model) {
-        logProgress(`model missing from registry: ${TARGET_MODEL_REF}`);
+        logProgress(`model missing from registry: ${CODEX_MODEL_REF}`);
         return;
       }
 
-      logProgress(`target=${TARGET_MODEL_REF} agentDir=${agentDir}`);
+      logProgress(`target=${CODEX_MODEL_REF} agentDir=${agentDir}`);
+
+      // Codex OAuth credentials live in auth-profiles.json, which
+      // discoverAuthStorage already loads — no explicit setRuntimeApiKey.
+      let liveResult: { result: ReviewResult; duration: number };
+      try {
+        liveResult = await runReviewLive({
+          model,
+          agentDir,
+          authStorage,
+          modelRegistry,
+          transcript: syntheticTranscript(),
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (isKnownLiveBlocker(msg)) {
+          logProgress(`skip (${msg})`);
+          return;
+        }
+        throw err;
+      }
+
+      assertHealthyReview(liveResult);
+    },
+    LIVE_TIMEOUT_MS,
+  );
+
+  it.skipIf(!DEEPSEEK)(
+    "scenario D — DeepSeek API key",
+    async () => {
+      const cfg = getRuntimeConfig();
+      await ensureOpenClawModelsJson(cfg);
+      const agentDir = resolveDefaultAgentDir(cfg);
+      const authStorage = discoverAuthStorage(agentDir);
+      const modelRegistry = discoverModels(authStorage, agentDir);
+
+      const [provider, ...rest] = DEEPSEEK_MODEL_REF.split("/");
+      const modelId = rest.join("/").trim();
+      if (!provider?.trim() || !modelId) {
+        throw new Error(
+          `Invalid OPENCLAW_LIVE_SKILL_REVIEW_DEEPSEEK_MODEL: ${JSON.stringify(DEEPSEEK_MODEL_REF)}`,
+        );
+      }
+      const model = modelRegistry.find(provider, modelId) as Model<Api> | null;
+      if (!model) {
+        logProgress(
+          `model missing from registry: ${DEEPSEEK_MODEL_REF} — add the ` +
+            `deepseek provider to models.json (see LEARNING_LOOP_SMOKE.md §5)`,
+        );
+        return;
+      }
+
+      // DeepSeek auth is an env-var API key (DEEPSEEK_API_KEY), not an OAuth
+      // profile in auth-profiles.json. getApiKeyForModel resolves it from the
+      // env; setRuntimeApiKey injects it into the AuthStorage the review
+      // session uses — mirrors compact.ts and the e.2.a auth bridge.
+      const apiKeyInfo = await getApiKeyForModel({
+        model,
+        cfg,
+        agentDir,
+        workspaceDir: agentDir,
+      });
+      if (!apiKeyInfo.apiKey) {
+        logProgress("skip — no API key resolved for deepseek (set DEEPSEEK_API_KEY)");
+        return;
+      }
+      authStorage.setRuntimeApiKey(model.provider, apiKeyInfo.apiKey);
+
+      logProgress(`target=${DEEPSEEK_MODEL_REF} agentDir=${agentDir}`);
 
       let liveResult: { result: ReviewResult; duration: number };
       try {
@@ -274,47 +416,7 @@ describeLive("learning loop end-to-end smoke (4.3.e)", () => {
         throw err;
       }
 
-      const { result, duration } = liveResult;
-
-      // Always log result + actionsLog to stderr (OQ-E) — surfaces the
-      // review's decisions for post-mortem on first runs and on failures.
-      process.stderr.write(
-        `[live][skill-review] duration=${duration}ms ` +
-          `tokensIn=${result.tokensIn} tokensOut=${result.tokensOut} ` +
-          `skillsCreated=${result.skillsCreated} ` +
-          `skillsUpdated=${result.skillsUpdated} ` +
-          `skillsDeleted=${result.skillsDeleted} ` +
-          `actionsLog=${JSON.stringify(result.actionsLog ?? [], null, 2)}\n`,
-      );
-
-      expect(duration).toBeLessThan(90_000);
-      expect(result.tokensIn).toBeGreaterThan(0);
-      expect(result.tokensOut).toBeGreaterThan(0);
-
-      const totalMutations = result.skillsCreated + result.skillsUpdated + result.skillsDeleted;
-      if (totalMutations === 0 && result.tokensIn > 0) {
-        process.stderr.write(
-          `[live][skill-review] WARN: model returned end_turn without skill ` +
-            `mutations (tokensIn=${result.tokensIn}). Transcript may be too ` +
-            `soft for this model. Failing assertion to enforce smoke contract.\n`,
-        );
-      }
-      expect(totalMutations).toBeGreaterThanOrEqual(1);
-
-      const skillsDir = path.join(tmpDir, "skills");
-      const skillNames = fs.readdirSync(skillsDir);
-      expect(skillNames.length).toBeGreaterThanOrEqual(1);
-
-      const firstSkillName = skillNames[0];
-      expect(firstSkillName).toBeDefined();
-      const firstSkillFile = path.join(skillsDir, firstSkillName!, "SKILL.md");
-      expect(fs.existsSync(firstSkillFile)).toBe(true);
-
-      const content = fs.readFileSync(firstSkillFile, "utf8");
-      expect(content).toMatch(/^---\n/);
-      expect(content).toMatch(/name:\s*\S+/);
-      expect(content).toMatch(/description:\s*\S+/);
-      expect(content).toMatch(/agent_created:\s*true/);
+      assertHealthyReview(liveResult);
     },
     LIVE_TIMEOUT_MS,
   );
