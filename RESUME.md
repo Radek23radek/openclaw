@@ -1,5 +1,59 @@
 # Stan projektu — pauza 2026-05-12
 
+## Stan pauzy 2026-05-16 (4.3.e — e.3 done, e.4 optional remaining)
+
+**4.3.d ZAMKNIĘTE** (d.4 sandbox config + d.5 auth/model resolution dokończone).
+**4.3.e w toku** — live smoke test:
+
+- `166c0f0dc2` e.1 — live test infrastructure (`skill-review.live.test.ts`)
+- `4cccb7f7c5` e.2 — scenario C (Codex) test
+- `eeddcb0fe2` e.2.a — auth bridge fix (`SkillReviewContext` dziedziczy `authStorage` + `modelRegistry`)
+- e.2.b — diagnostyka (bez commitu, feed do e.2.c)
+- `802399b4b5` e.2.c — provenance merge fix (`composeSkillFile`)
+- e.3 — docs: `LEARNING_LOOP_SMOKE.md` (runbook) + ten RESUME refresh
+
+**Live smoke test PRZECHODZI** — learning loop udowodniony end-to-end: real
+Codex `gpt-5.4-mini` OAuth → synthetic transcript → review → `skill_manage`
+→ `SKILL.md` z `agent_created: true`.
+
+**Pozostało w 4.3.e**: tylko **e.4** — scenariusz DeepSeek (OPCJONALNY,
+api_key provider; po nim 4.3.e i całe 4.3 zamknięte).
+
+**Mock suite**: 262 passed | 2 skipped (16 plików). `tsgo tsconfig.core.json` 0 errors.
+
+### Discoveries 4.3.e (6 — szczegóły w commit history + PORT_PLAN_4_3.md)
+
+1. **HOME isolation** — shared test setup izoluje `HOME` do tmpdir; live test
+   wymaga `OPENCLAW_LIVE_USE_REAL_HOME=1` by widzieć real auth profiles.
+2. **Global OAuth mock** — `test/setup.shared.ts` mockuje `@earendil-works/pi-ai/oauth`
+   dla wszystkich testów (zbadane; nie był blockerem).
+3. **Auth bridge gap** (`eeddcb0fe2`) — `runSkillReview` nie przekazywał
+   `authStorage`/`modelRegistry` → pi-coding-agent czytał pusty `auth.json`
+   → loop cicho zwracał empty reviews od 4.3.c.5.
+4. **accountId profile-specific** — pi-ai `getAccountId` dekoduje OAuth JWT
+   po claim `chatgpt_account_id`; codex-cli-synced profil go ma, OpenClaw-native
+   login nie.
+5. **ChatGPT-account model availability** — Codex OAuth serwuje stały zestaw
+   modeli; `gpt-5.1-codex-mini` odrzucony, użyty `gpt-5.4-mini`.
+6. **Provenance merge gap** (`802399b4b5`) — `skill_manage` odrzucał wygenerowany
+   frontmatter gdy model dostarczył własny → `agent_created` gubione.
+
+### Side-effekty środowiska (z e.2.b diagnostyki)
+
+- `~/.openclaw/agents/main/agent/auth-profiles.json` — usunięty broken profil
+  `openai-codex:radoslaw.zwolan@onet.pl`; backup `auth-profiles.json.bak-4.3.e`.
+- `auth-state.json` — `lastGood["openai-codex"]` → `openai-codex:default`;
+  backup `auth-state.json.bak-4.3.e`.
+
+### TODO post-4.3.e
+
+- Real-world "All models failed" — provider config drift `openai-codex` vs
+  `codex` + heartbeat model; pełna diagnoza przez `openclaw logs --follow`.
+- `composeSkillFile` YAML quoting naive dla edge cases (newline/backslash/specials)
+  — rozważyć YAML serialization library.
+
+---
+
 ## Stan pauzy 2026-05-15 (mid-4.3.d, after d.3)
 
 **4.3.d w toku — 3 z 5 podkroków zamknięte**:
@@ -188,9 +242,9 @@ Branch: `main` (10 commitów ponad `origin/main` — nic nie pushowane)
 - `@earendil-works/pi-coding-agent` — `createAgentSession`, `SessionManager.inMemory()`, `ToolDefinition`
 - `src/agents/pi-tool-definition-adapter.ts:226` — `toToolDefinitions` (wzorzec konwersji `AnyAgentTool` → `ToolDefinition`)
 
-**Call site do podłączenia (mock reviewFn → real):**
+**Call site reviewFn (HISTORYCZNE — wpięte w 4.3.c.5):**
 
-- `src/agents/pi-embedded-runner/run/attempt.ts:3804-3806` — obecnie `reviewFn: async () => { /* No-op review until KROK 4.3 wires the real LLM call. */ }`
+- `src/agents/pi-embedded-runner/run/attempt.ts` — `reviewFn` w `scheduleLearningReviewIfDue` woła **real `runSkillReview`** od commita `aabe3b5f58` (4.3.c.5). Od 4.3.e.2.a closure przekazuje też `authStorage` + `modelRegistry`. No-op mock z tej linii już nie istnieje.
 
 ## Stan testów
 
