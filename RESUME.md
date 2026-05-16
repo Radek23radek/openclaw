@@ -1,5 +1,55 @@
 # Stan projektu — pauza 2026-05-12
 
+## PROJECT STATUS: 4.3 COMPLETE (2026-05-16) 🏁
+
+Etap 4.3 (port Hermes self-improvement learning loop) — **ZAMKNIĘTY**.
+Wszystkie sub-etapy a/b/c/d/e shipped. Live smoke test zielony na dwóch
+providerach. Runbook: `LEARNING_LOOP_SMOKE.md`. Findings: `PORT_PLAN_4_3.md`
+sekcja "Discoveries during implementation".
+
+### 4.3.e — wszystkie kroki
+
+| Krok  | Opis                                                                            | Commit        |
+| ----- | ------------------------------------------------------------------------------- | ------------- |
+| e.1   | live test infrastructure (`skill-review.live.test.ts`)                          | `166c0f0dc2`  |
+| e.2   | scenario C (Codex) test                                                         | `4cccb7f7c5`  |
+| e.2.a | auth bridge fix — `SkillReviewContext` dziedziczy `authStorage`+`modelRegistry` | `eeddcb0fe2`  |
+| e.2.b | diagnostyka (auth profile / accountId / model availability)                     | (bez commitu) |
+| e.2.c | provenance merge fix — `composeSkillFile`                                       | `802399b4b5`  |
+| e.3   | docs — `LEARNING_LOOP_SMOKE.md` runbook + RESUME refresh                        | `221662ff65`  |
+| e.4   | scenario D — DeepSeek smoke test                                                | `1d73770e21`  |
+
+### Live smoke results
+
+- **Codex** `gpt-5.4-mini` (OAuth, flat): 12.4s, tokensIn=2364/out=733, skill `repo-file-discovery`
+- **DeepSeek** `deepseek-chat` (api_key, ~$0.002): 15.9s, tokensIn=2840/out=926, skill `file-lookup-and-resource-location`
+- Oba: SKILL.md z `agent_created: true`, trafna lekcja z transkryptu. Learning loop generalizuje OAuth + api_key.
+
+### Dwa realne bugi złapane przez 4.3.e (niewidoczne dla mock testów)
+
+- **e.2.a auth bridge** — `runSkillReview` zostawiał `authStorage`/`modelRegistry`
+  na pi-coding-agent defaults (pusty `agentDir/auth.json`). Prod learning loop
+  cicho zwracał `EMPTY_REVIEW_RESULT` przez G7 catch od wpięcia 4.3.c.5.
+- **e.2.c provenance merge** — `skill_manage` pisał content modelu verbatim gdy
+  zaczynał się od `---`, gubiąc wygenerowany frontmatter w tym `agent_created`.
+
+### POST-PROJECT TODO
+
+- **Security**: zrotuj klucz DeepSeek na platform.deepseek.com (był plaintext w czacie).
+- **Cleanup** (po 7-14 dniach): backupy `auth-profiles.json.bak-4.3.e`,
+  `auth-state.json.bak-4.3.e`, `models.json.bak-4.3.e-deepseek`.
+- **Real machine "All models failed"**: zastosuj profile-cleanup procedure
+  z `LEARNING_LOOP_SMOKE.md` §4 do realnego `~/.openclaw/` (provider config
+  drift `openai-codex` vs `codex`, heartbeat model).
+- **Opcjonalne — upstream PR**: auth bridge (e.2.a) + provenance merge (e.2.c)
+  to wartościowe fixy dla OpenClaw upstream.
+- **Opcjonalne — Etap 5**: prompt tuning jeśli content quality wymaga poprawy
+  po dłuższym użyciu.
+- **Tech debt**: `composeSkillFile` YAML quoting naive dla edge cases
+  (newline/backslash/specials) — rozważyć YAML serialization library.
+
+---
+
 ## Stan pauzy 2026-05-16 (4.3.e — e.3 done, e.4 optional remaining)
 
 **4.3.d ZAMKNIĘTE** (d.4 sandbox config + d.5 auth/model resolution dokończone).
