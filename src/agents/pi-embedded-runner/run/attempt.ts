@@ -3808,6 +3808,8 @@ export async function runEmbeddedAttempt(
                   workspaceDir: params.workspaceDir,
                   config,
                   parentModel: params.model,
+                  authStorage: params.authStorage,
+                  modelRegistry: params.modelRegistry,
                   signal: params.abortSignal,
                 }),
             });

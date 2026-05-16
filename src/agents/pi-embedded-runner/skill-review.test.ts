@@ -10,9 +10,11 @@ import path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
-  SessionManager,
+  type AuthStorage,
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult,
+  type ModelRegistry,
+  SessionManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -125,6 +127,12 @@ function makeReviewContext(overrides?: Partial<SkillReviewContext>): SkillReview
     workspaceDir: tmpDir,
     config: { learning: { enabled: true } },
     parentModel,
+    // Stubs — these tests inject a mock createSession, so the real
+    // createAgentSession (the only consumer of authStorage/modelRegistry)
+    // is never reached. The d.4 sandbox test asserts they are passed
+    // through by identity. Live wiring is exercised by skill-review.live.test.ts.
+    authStorage: {} as AuthStorage,
+    modelRegistry: {} as ModelRegistry,
     ...overrides,
   };
 }
@@ -456,6 +464,25 @@ describe("runSkillReview — sandbox configuration (4.3.d.4)", () => {
     const opts = createSession.mock.calls[0]?.[0] as CreateAgentSessionOptions;
     expect(opts.sessionManager).toBeInstanceOf(SessionManager);
     expect(opts.sessionManager?.isPersisted()).toBe(false);
+  });
+
+  it("inherits parent authStorage and modelRegistry into the session", async () => {
+    // Auth bridge: the review fork must reuse the parent's live AuthStorage
+    // (carrying the runtime API key) and ModelRegistry. Without passthrough,
+    // pi-coding-agent falls back to the empty agentDir/auth.json and the
+    // session fails with "No API key found".
+    const mock = makeMockSession({ toolCalls: [] });
+    const createSession = vi.fn(makeMockCreateSession(mock));
+    const context = makeReviewContext();
+
+    await runSkillReview(makeMockMessages(), context, {
+      createSession,
+      resolveAuth: resolveAuthOk,
+    });
+
+    const opts = createSession.mock.calls[0]?.[0] as CreateAgentSessionOptions;
+    expect(opts.authStorage).toBe(context.authStorage);
+    expect(opts.modelRegistry).toBe(context.modelRegistry);
   });
 });
 

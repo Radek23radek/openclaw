@@ -5,6 +5,17 @@
 // isLiveTestEnabled). Per-scenario gating then additionally checks for
 // the specific credentials each scenario needs (OAuth profile, env var).
 //
+// IMPORTANT: this file reads the real ~/.openclaw/agents/main/agent/
+// auth-profiles.json to detect available OAuth profiles. The repo's
+// shared test setup (test/test-env.ts:installTestEnv) isolates HOME to
+// a tmpdir by default — that hides the real auth profiles from
+// os.homedir(). To run live, you MUST also set
+// OPENCLAW_LIVE_USE_REAL_HOME=1; with both flags, test-env keeps the
+// real HOME (test-env.ts:432-434). Example invocation:
+//
+//   OPENCLAW_LIVE_TEST=1 OPENCLAW_LIVE_USE_REAL_HOME=1 \
+//     pnpm test:live src/agents/pi-embedded-runner/skill-review.live.test.ts
+//
 // Strategy (Option B from the e.1 sketch): we exercise runSkillReview
 // directly with a hand-crafted synthetic transcript, NOT a full attempt.ts
 // turn loop. Rationale documented in src/agents/pi-embedded-runner/run/
@@ -18,6 +29,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import type { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRuntimeConfig } from "../../config/config.js";
 import { resolveDefaultAgentDir } from "../agent-scope.js";
@@ -45,7 +57,6 @@ vi.mock("../../utils.js", async (importOriginal) => {
 });
 
 const LIVE = isLiveTestEnabled([]);
-const CODEX_OAUTH = LIVE && hasProfile("openai-codex:");
 const describeLive = LIVE ? describe : describe.skip;
 
 // Default 120s per-test. Override matches gateway-models.profiles.live.test.ts.
@@ -98,6 +109,13 @@ function hasProfile(prefix: string): boolean {
     return false;
   }
 }
+
+// CODEX_OAUTH must be declared AFTER REAL_AGENT_DIR + hasProfile because
+// hasProfile reads REAL_AGENT_DIR via closure. If declared near LIVE
+// (before REAL_AGENT_DIR), the TDZ reference inside hasProfile is
+// swallowed by the function's try/catch and CODEX_OAUTH silently
+// evaluates to false — masking real auth state.
+const CODEX_OAUTH = LIVE && hasProfile("openai-codex:");
 
 /**
  * "Ślepy zaułek" transcript — user asks for a file that doesn't exist;
@@ -179,6 +197,8 @@ function syntheticTranscript(): LearningMessage[] {
 async function runReviewLive(opts: {
   model: Model<Api>;
   agentDir: string;
+  authStorage: AuthStorage;
+  modelRegistry: ModelRegistry;
   transcript: LearningMessage[];
 }): Promise<{ result: ReviewResult; duration: number }> {
   const tmpWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "skill-review-ws-"));
@@ -188,6 +208,8 @@ async function runReviewLive(opts: {
       workspaceDir: tmpWorkspace,
       config: { learning: { enabled: true } },
       parentModel: opts.model,
+      authStorage: opts.authStorage,
+      modelRegistry: opts.modelRegistry,
     };
     const start = Date.now();
     const result = await runAsBackgroundReview(() => runSkillReview(opts.transcript, context));
@@ -236,6 +258,8 @@ describeLive("learning loop end-to-end smoke (4.3.e)", () => {
         liveResult = await runReviewLive({
           model,
           agentDir,
+          authStorage,
+          modelRegistry,
           transcript: syntheticTranscript(),
         });
       } catch (err) {
