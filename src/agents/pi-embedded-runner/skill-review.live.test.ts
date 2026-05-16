@@ -64,11 +64,14 @@ const LIVE_TIMEOUT_MS = Number(process.env.OPENCLAW_LIVE_TEST_TIMEOUT_MS ?? 120_
 
 const REAL_AGENT_DIR = path.join(os.homedir(), ".openclaw", "agents", "main", "agent");
 
-// Scenario C target. gpt-5.1-codex-mini matches the existing
-// openai-reasoning-compat.live.test.ts default — small/fast/cheap subset of
-// ChatGPT Plus OAuth quota. Env override lets us swap to a heavier model
-// (e.g. gpt-5.1-codex) without touching the file.
-const DEFAULT_SKILL_REVIEW_MODEL = "openai-codex/gpt-5.1-codex-mini";
+// Scenario C target. ChatGPT-account Codex (OAuth) only serves a fixed
+// model set — gpt-5.1-codex-mini is NOT among them and the API rejects it
+// with "model is not supported when using Codex with a ChatGPT account".
+// ChatGPT-account supported Codex models (from ~/.codex/models_cache.json):
+//   gpt-5.4-mini (default, smallest/fastest), gpt-5.4, gpt-5.3-codex,
+//   gpt-5.2, codex-auto-review
+//   Override via OPENCLAW_LIVE_SKILL_REVIEW_MODEL env var.
+const DEFAULT_SKILL_REVIEW_MODEL = "openai-codex/gpt-5.4-mini";
 const TARGET_MODEL_REF =
   process.env.OPENCLAW_LIVE_SKILL_REVIEW_MODEL?.trim() || DEFAULT_SKILL_REVIEW_MODEL;
 

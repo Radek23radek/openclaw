@@ -65,23 +65,95 @@ function skillFilePath(name: string): string {
   return path.join(skillDir(name), "SKILL.md");
 }
 
-function buildFrontmatter(params: {
+// Provenance fields are OpenClaw's concern, not the model's: agent_created
+// gates auto-curation (security-relevant), created_at is an objective fact.
+// They always take our value, overriding anything the model wrote. Every
+// other field — including version/platforms — is the skill author's.
+const PROVENANCE_FIELDS = new Set(["agent_created", "created_at"]);
+const DEFAULT_VERSION = "1.0.0";
+const DEFAULT_PLATFORMS = "[linux, macos, windows]";
+
+/**
+ * Split content into frontmatter lines + body. A frontmatter block is a
+ * `---` line, content, and a closing `---`. If content does not open with a
+ * properly closed block, returns fmLines=null and the whole content as body
+ * (graceful: an unterminated `---` is treated as plain content, not a crash).
+ */
+function splitFrontmatter(content: string): { fmLines: string[] | null; body: string } {
+  const match = /^---\r?\n(.*?)\r?\n---\r?\n?/s.exec(content);
+  if (!match) {
+    return { fmLines: null, body: content };
+  }
+  const inner = match[1];
+  return {
+    fmLines: inner.length > 0 ? inner.split(/\r?\n/) : [],
+    body: content.slice(match[0].length),
+  };
+}
+
+/**
+ * Group frontmatter lines into field blocks. A block is a top-level `key:`
+ * line plus any following continuation lines (multi-line YAML values, list
+ * items) up to the next top-level key. Lines before the first key are
+ * dropped. Keeps original line text so re-emission preserves the model's
+ * exact formatting for fields we pass through.
+ */
+function parseFieldBlocks(fmLines: string[]): Array<{ key: string; lines: string[] }> {
+  const blocks: Array<{ key: string; lines: string[] }> = [];
+  let current: { key: string; lines: string[] } | null = null;
+  for (const line of fmLines) {
+    const keyMatch = /^([A-Za-z_][\w-]*):/.exec(line);
+    if (keyMatch) {
+      current = { key: keyMatch[1], lines: [line] };
+      blocks.push(current);
+    } else if (current) {
+      current.lines.push(line);
+    }
+  }
+  return blocks;
+}
+
+/**
+ * Compose a final SKILL.md. Deterministic field order:
+ *   name, description       — tool args, authoritative (validated)
+ *   version, platforms      — content metadata: model's value wins, else default
+ *   <other model fields>    — preserved verbatim (category, tags, custom...)
+ *   agent_created, created_at — provenance: always ours, override the model
+ * The model's body follows after one blank line. The model's own name/
+ * description and any provenance fields it wrote are dropped — tool args and
+ * our provenance replace them.
+ */
+function composeSkillFile(params: {
   name: string;
   description: string;
-  agentCreated: boolean;
+  content: string;
+  provenance: { agentCreated: boolean; createdAt: string };
 }): string {
-  const lines = [
-    "---",
+  const { fmLines, body } = splitFrontmatter(params.content);
+  const blocks = parseFieldBlocks(fmLines ?? []);
+
+  const fields: string[] = [
     `name: ${params.name}`,
     `description: "${params.description.replace(/"/g, '\\"')}"`,
-    "version: 1.0.0",
-    "platforms: [linux, macos, windows]",
-    `agent_created: ${params.agentCreated}`,
-    `created_at: "${new Date().toISOString()}"`,
-    "---",
-    "",
   ];
-  return lines.join("\n");
+
+  const versionBlock = blocks.find((b) => b.key === "version");
+  fields.push(...(versionBlock ? versionBlock.lines : [`version: ${DEFAULT_VERSION}`]));
+  const platformsBlock = blocks.find((b) => b.key === "platforms");
+  fields.push(...(platformsBlock ? platformsBlock.lines : [`platforms: ${DEFAULT_PLATFORMS}`]));
+
+  for (const block of blocks) {
+    if (block.key === "name" || block.key === "description") continue;
+    if (block.key === "version" || block.key === "platforms") continue;
+    if (PROVENANCE_FIELDS.has(block.key)) continue;
+    fields.push(...block.lines);
+  }
+
+  fields.push(`agent_created: ${params.provenance.agentCreated}`);
+  fields.push(`created_at: "${params.provenance.createdAt}"`);
+
+  const bodyText = body.replace(/^\r?\n+/, "");
+  return `---\n${fields.join("\n")}\n---\n\n${bodyText}`;
 }
 
 function isAgentCreated(skillFilePath: string): boolean {
@@ -142,16 +214,15 @@ function createSkill(params: {
   fs.mkdirSync(dir, { recursive: true });
 
   const agentCreated = isBackgroundReview();
-  const frontmatter = buildFrontmatter({
+  // composeSkillFile merges any model-supplied frontmatter with our
+  // provenance fields. Earlier this path used the model's content verbatim
+  // when it opened with `---`, which silently dropped agent_created.
+  const finalContent = composeSkillFile({
     name: params.name,
     description: params.description,
-    agentCreated,
+    content: params.content,
+    provenance: { agentCreated, createdAt: new Date().toISOString() },
   });
-
-  // If content already starts with frontmatter (---), use it as-is.
-  // Otherwise prepend auto-generated frontmatter.
-  const hasExistingFrontmatter = params.content.trimStart().startsWith("---");
-  const finalContent = hasExistingFrontmatter ? params.content : frontmatter + params.content;
 
   fs.writeFileSync(skillFilePath(params.name), finalContent, "utf8");
 
@@ -175,7 +246,30 @@ function updateSkill(params: { name: string; content: string }): SkillManageResu
   }
 
   const filePath = path.join(existingDir, "SKILL.md");
-  fs.writeFileSync(filePath, params.content, "utf8");
+
+  // Provenance reflects the original creator and is immutable across updates:
+  // re-read it from the existing file rather than the current review context.
+  // A background-review update of a user-created skill keeps
+  // agent_created: false. name/description are likewise the skill's identity
+  // and are preserved from the existing file (update only changes the body
+  // and any non-provenance metadata the model supplies).
+  const existingFm = parseFrontmatter(fs.readFileSync(filePath, "utf8"));
+  const agentCreated = existingFm?.agent_created === "true";
+  const existingCreatedAt = existingFm?.created_at;
+  const createdAt =
+    typeof existingCreatedAt === "string" && existingCreatedAt.trim()
+      ? existingCreatedAt
+      : new Date().toISOString();
+  const existingName = existingFm?.name;
+  const existingDescription = existingFm?.description;
+
+  const finalContent = composeSkillFile({
+    name: typeof existingName === "string" ? existingName : params.name,
+    description: typeof existingDescription === "string" ? existingDescription : "",
+    content: params.content,
+    provenance: { agentCreated, createdAt },
+  });
+  fs.writeFileSync(filePath, finalContent, "utf8");
   return { ok: true, message: `Skill "${params.name}" updated at ${filePath}.` };
 }
 

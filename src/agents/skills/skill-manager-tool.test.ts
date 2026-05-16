@@ -104,7 +104,9 @@ describe("skill_manage — create", () => {
     expect(result.error).toContain("exceeds limit");
   });
 
-  it("uses provided frontmatter when content starts with ---", () => {
+  it("merges model-supplied frontmatter with our provenance fields", () => {
+    // The model may write its own frontmatter. version (author metadata) is
+    // kept as-is; agent_created (provenance) is always injected by us.
     const customContent =
       "---\nname: custom-fm\ndescription: custom\nversion: 2.0.0\n---\n# Custom";
     skillManage({
@@ -115,8 +117,54 @@ describe("skill_manage — create", () => {
     });
     const filePath = path.join(tmpDir, "skills", "custom-fm-skill", "SKILL.md");
     const written = fs.readFileSync(filePath, "utf8");
-    expect(written).toContain("version: 2.0.0");
-    expect(written).not.toContain("agent_created");
+    expect(written).toContain("version: 2.0.0"); // model wins — author metadata
+    expect(written).toContain("agent_created: false"); // provenance — always injected
+    expect(written).toContain("# Custom"); // body preserved
+  });
+
+  it("injects agent_created: true when model supplies frontmatter in background review", async () => {
+    await runAsBackgroundReview(async () => {
+      skillManage({
+        action: "create",
+        name: "fm-bg-skill",
+        description: "bg",
+        content: "---\nname: fm-bg-skill\ndescription: bg\n---\n# Body",
+      });
+    });
+    const written = fs.readFileSync(path.join(tmpDir, "skills", "fm-bg-skill", "SKILL.md"), "utf8");
+    expect(written).toContain("agent_created: true");
+  });
+
+  it("overrides a model-written agent_created with the real provenance", async () => {
+    // A model that writes agent_created: false in its content must not be
+    // able to spoof provenance — our value (background review → true) wins.
+    await runAsBackgroundReview(async () => {
+      skillManage({
+        action: "create",
+        name: "spoof-skill",
+        description: "spoof",
+        content: "---\nname: spoof-skill\ndescription: spoof\nagent_created: false\n---\n# Body",
+      });
+    });
+    const written = fs.readFileSync(path.join(tmpDir, "skills", "spoof-skill", "SKILL.md"), "utf8");
+    expect(written).toContain("agent_created: true");
+    expect(written).not.toContain("agent_created: false");
+  });
+
+  it("preserves model-supplied non-provenance fields (category, tags)", () => {
+    skillManage({
+      action: "create",
+      name: "extra-fields-skill",
+      description: "extras",
+      content:
+        "---\nname: extra-fields-skill\ndescription: extras\ncategory: search\ntags: [a, b]\n---\n# Body",
+    });
+    const written = fs.readFileSync(
+      path.join(tmpDir, "skills", "extra-fields-skill", "SKILL.md"),
+      "utf8",
+    );
+    expect(written).toContain("category: search");
+    expect(written).toContain("tags: [a, b]");
   });
 });
 
@@ -149,6 +197,30 @@ describe("skill_manage — update", () => {
     }) as SkillManageResult;
     expect(result.ok).toBe(false);
     expect(result.error).toContain("not found");
+  });
+
+  it("preserves agent_created: true from the original on update", async () => {
+    await runAsBackgroundReview(async () => {
+      skillManage({ action: "create", name: "agent-upd", description: "d", content: "# Orig" });
+    });
+    // Update runs in a foreground context — provenance must NOT flip to false.
+    skillManage({ action: "update", name: "agent-upd", content: "# Updated" });
+    const written = fs.readFileSync(path.join(tmpDir, "skills", "agent-upd", "SKILL.md"), "utf8");
+    expect(written).toContain("agent_created: true");
+    expect(written).toContain("# Updated");
+  });
+
+  it("takes provenance from the original file, not the update content frontmatter", () => {
+    // "updatable" was created user-directed (agent_created: false) in beforeEach.
+    // An update whose content tries to assert agent_created: true is ignored.
+    skillManage({
+      action: "update",
+      name: "updatable",
+      content: "---\nname: updatable\nagent_created: true\n---\n# Sneaky update",
+    });
+    const written = fs.readFileSync(path.join(tmpDir, "skills", "updatable", "SKILL.md"), "utf8");
+    expect(written).toContain("agent_created: false");
+    expect(written).toContain("# Sneaky update");
   });
 });
 
