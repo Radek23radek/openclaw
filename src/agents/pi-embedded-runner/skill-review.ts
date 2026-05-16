@@ -17,7 +17,12 @@
 import { tmpdir } from "node:os";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Api, type Model } from "@earendil-works/pi-ai";
-import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+  type AuthStorage,
+  createAgentSession,
+  type ModelRegistry,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getApiKeyForModel } from "../model-auth.js";
 import { toToolDefinitions } from "../pi-tool-definition-adapter.js";
@@ -147,6 +152,25 @@ export type SkillReviewContext = {
    * for reviewModel="auto" and as the auth precedence anchor.
    */
   parentModel: Model<Api>;
+  /**
+   * Parent agent's live AuthStorage instance. The parent already ran the
+   * full auth flow (auth-controller) and injected the provider's runtime
+   * API key via authStorage.setRuntimeApiKey() — that key lives only in
+   * this in-memory object, NOT in agentDir/auth.json (which OpenClaw
+   * leaves empty; credentials live in auth-profiles.json). The review
+   * fork shares the parent's model/provider when reviewModel="auto", so
+   * this object already carries a working credential. It MUST be passed
+   * through to createAgentSession — pi-coding-agent's default
+   * AuthStorage.create(agentDir/auth.json) reads the empty file and the
+   * review session would fail with "No API key found".
+   */
+  authStorage: AuthStorage;
+  /**
+   * Parent agent's live ModelRegistry. Passed through to createAgentSession
+   * for parity with the parent session and compact.ts — avoids a redundant
+   * ModelRegistry.create() rebuild from agentDir/models.json.
+   */
+  modelRegistry: ModelRegistry;
   /** Optional caller-supplied AbortSignal (e.g. process shutdown). */
   signal?: AbortSignal;
 };
@@ -383,20 +407,22 @@ export async function runSkillReview(
     const processedNames = new Set<string>();
     const reviewTool = buildReviewToolWithCap(actionsLog, counterState, processedNames);
 
-    // NOTE: authStorage left to default — resolves to agentDir/auth.json.
-    // Parent agent has its own AuthStorage instance on the same file.
-    // SAFE for multi-instance access: AuthStorage uses file-level locking
-    // (pi-coding-agent dist/core/auth-storage.d.ts:5 —
-    //  "Uses file locking to prevent race conditions when multiple pi instances").
-    // OAuth refresh is handled internally by pi-coding-agent via
-    // refreshOAuthTokenWithLock (auto-refresh on getApiKey() call).
-    // Retryable errors (overloaded/rate-limit/5xx) auto-retried with
-    // auto_retry_start/auto_retry_end events.
-    // Auth errors that ARE NOT retryable propagate as exceptions →
-    // caught by G7 outer try/catch in runSkillReview → EMPTY_REVIEW_RESULT.
+    // authStorage + modelRegistry are inherited from the parent agent (see
+    // SkillReviewContext docs). The parent's auth-controller already injected
+    // the provider's runtime API key into this live AuthStorage object via
+    // setRuntimeApiKey(); pi-coding-agent's default
+    // AuthStorage.create(agentDir/auth.json) would read OpenClaw's empty
+    // auth.json instead and the review session would fail with
+    // "No API key found". Mirrors compact.ts and attempt.ts, which both
+    // pass authStorage + modelRegistry explicitly.
+    // OAuth refresh is handled internally by pi-coding-agent (auto-refresh
+    // on getApiKey()); retryable errors auto-retry with auto_retry_* events;
+    // non-retryable auth errors propagate → G7 outer catch → EMPTY_REVIEW_RESULT.
     const { session } = await (deps?.createSession ?? createAgentSession)({
       cwd: tmpdir(),
       agentDir: context.agentDir,
+      authStorage: context.authStorage,
+      modelRegistry: context.modelRegistry,
       model,
       customTools: toToolDefinitions([reviewTool]),
       sessionManager: SessionManager.inMemory(),
