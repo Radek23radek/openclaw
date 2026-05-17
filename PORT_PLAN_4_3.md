@@ -787,7 +787,7 @@ production bugs. Detail in commit history; runbook in `LEARNING_LOOP_SMOKE.md`.
 2. **Global OAuth mock** (e.2 diagnostyka) — `test/setup.shared.ts` mocks
    `@earendil-works/pi-ai/oauth` for all tests. Investigated as a suspect;
    `vi.unmock` confirmed it was NOT the live-auth blocker.
-3. **Auth bridge gap** (e.2.a — FIXED, `eeddcb0fe2`) — `runSkillReview`
+3. **Auth bridge gap** (e.2.a — FIXED, `79fe7cbf56`) — `runSkillReview`
    left `authStorage`/`modelRegistry` to the pi-coding-agent defaults,
    which resolve to an empty `agentDir/auth.json`. The production learning
    loop had been silently returning `EMPTY_REVIEW_RESULT` via the G7 catch
@@ -802,7 +802,7 @@ production bugs. Detail in commit history; runbook in `LEARNING_LOOP_SMOKE.md`.
 5. **ChatGPT-account model availability** (e.2.b) — Codex OAuth serves
    only a fixed model set (`~/.codex/models_cache.json`). `gpt-5.1-codex-mini`
    is rejected; the scenario target switched to `gpt-5.4-mini`.
-6. **Provenance merge gap** (e.2.c — FIXED, `802399b4b5`) —
+6. **Provenance merge gap** (e.2.c — FIXED, `75b44e4d8e`) —
    `skill_manage` `createSkill`/`updateSkill` wrote model-supplied content
    verbatim when it began with `---`, discarding the generated frontmatter
    including the `agent_created` provenance flag. A real LLM always writes

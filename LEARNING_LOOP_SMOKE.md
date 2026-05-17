@@ -200,9 +200,9 @@ auto-deleted).
 | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `Failed to extract accountId from token`                             | Auth resolved a Codex profile whose OAuth token lacks the `chatgpt_account_id` JWT claim (an OpenClaw-native-login profile, not the Codex-CLI-synced one). | Run the profile cleanup in §4 — keep `openai-codex:default`, drop the profile without `accountId`, point `lastGood` at `:default`. |
 | `... model is not supported when using Codex with a ChatGPT account` | The target model is not in the ChatGPT-account Codex model set.                                                                                            | Use a model from `~/.codex/models_cache.json` (§4), e.g. `gpt-5.4-mini`.                                                           |
-| `No API key found for openai-codex` (from `session.prompt()`)        | `runSkillReview` did not pass `authStorage` to `createAgentSession`; pi-coding-agent fell back to the empty `agentDir/auth.json`.                          | Fixed in commit `eeddcb0fe2` (auth bridge). If it recurs, verify `SkillReviewContext.authStorage` is threaded through.             |
+| `No API key found for openai-codex` (from `session.prompt()`)        | `runSkillReview` did not pass `authStorage` to `createAgentSession`; pi-coding-agent fell back to the empty `agentDir/auth.json`.                          | Fixed in commit `79fe7cbf56` (auth bridge). If it recurs, verify `SkillReviewContext.authStorage` is threaded through.             |
 | Test reports `↓ skipped`, never runs                                 | Missing `OPENCLAW_LIVE_TEST=1` or `OPENCLAW_LIVE_USE_REAL_HOME=1`, or no `openai-codex:` profile present.                                                  | Set both env vars; confirm a Codex profile exists in `auth-profiles.json`.                                                         |
-| Assertion fail on `agent_created`                                    | `skill_manage` dropped the provenance flag when the model supplied its own frontmatter.                                                                    | Fixed in commit `802399b4b5` (provenance merge).                                                                                   |
+| Assertion fail on `agent_created`                                    | `skill_manage` dropped the provenance flag when the model supplied its own frontmatter.                                                                    | Fixed in commit `75b44e4d8e` (provenance merge).                                                                                   |
 
 ## 8. Costs & timing
 
@@ -226,7 +226,7 @@ history and `PORT_PLAN_4_3.md`.
    blocker, but relevant to live-auth behavior).
 3. **Auth bridge gap** — `runSkillReview` left `authStorage`/`modelRegistry`
    to pi-coding-agent defaults, which read an empty `auth.json`; the loop
-   silently produced empty reviews. Fixed: commit `eeddcb0fe2`.
+   silently produced empty reviews. Fixed: commit `79fe7cbf56`.
 4. **accountId is profile-specific** — pi-ai's `getAccountId` decodes the
    OAuth JWT for a `chatgpt_account_id` claim; the Codex-CLI-synced profile
    has it, an OpenClaw-native-login profile does not.
@@ -234,7 +234,7 @@ history and `PORT_PLAN_4_3.md`.
    model set; `gpt-5.1-codex-mini` is rejected.
 6. **Provenance merge gap** — `skill_manage` discarded its generated
    frontmatter (including `agent_created`) when the model supplied its own;
-   a real LLM always does. Fixed: commit `802399b4b5`.
+   a real LLM always does. Fixed: commit `75b44e4d8e`.
 
 ## 10. Limitations / Related
 

@@ -11,13 +11,13 @@ sekcja "Discoveries during implementation".
 
 | Krok  | Opis                                                                            | Commit        |
 | ----- | ------------------------------------------------------------------------------- | ------------- |
-| e.1   | live test infrastructure (`skill-review.live.test.ts`)                          | `166c0f0dc2`  |
-| e.2   | scenario C (Codex) test                                                         | `4cccb7f7c5`  |
-| e.2.a | auth bridge fix — `SkillReviewContext` dziedziczy `authStorage`+`modelRegistry` | `eeddcb0fe2`  |
+| e.1   | live test infrastructure (`skill-review.live.test.ts`)                          | `561bdd7dd8`  |
+| e.2   | scenario C (Codex) test                                                         | `e34113b9cf`  |
+| e.2.a | auth bridge fix — `SkillReviewContext` dziedziczy `authStorage`+`modelRegistry` | `79fe7cbf56`  |
 | e.2.b | diagnostyka (auth profile / accountId / model availability)                     | (bez commitu) |
-| e.2.c | provenance merge fix — `composeSkillFile`                                       | `802399b4b5`  |
-| e.3   | docs — `LEARNING_LOOP_SMOKE.md` runbook + RESUME refresh                        | `221662ff65`  |
-| e.4   | scenario D — DeepSeek smoke test                                                | `1d73770e21`  |
+| e.2.c | provenance merge fix — `composeSkillFile`                                       | `75b44e4d8e`  |
+| e.3   | docs — `LEARNING_LOOP_SMOKE.md` runbook + RESUME refresh                        | `563c47ab35`  |
+| e.4   | scenario D — DeepSeek smoke test                                                | `6b3f5497fd`  |
 
 ### Live smoke results
 
@@ -55,11 +55,11 @@ sekcja "Discoveries during implementation".
 **4.3.d ZAMKNIĘTE** (d.4 sandbox config + d.5 auth/model resolution dokończone).
 **4.3.e w toku** — live smoke test:
 
-- `166c0f0dc2` e.1 — live test infrastructure (`skill-review.live.test.ts`)
-- `4cccb7f7c5` e.2 — scenario C (Codex) test
-- `eeddcb0fe2` e.2.a — auth bridge fix (`SkillReviewContext` dziedziczy `authStorage` + `modelRegistry`)
+- `561bdd7dd8` e.1 — live test infrastructure (`skill-review.live.test.ts`)
+- `e34113b9cf` e.2 — scenario C (Codex) test
+- `79fe7cbf56` e.2.a — auth bridge fix (`SkillReviewContext` dziedziczy `authStorage` + `modelRegistry`)
 - e.2.b — diagnostyka (bez commitu, feed do e.2.c)
-- `802399b4b5` e.2.c — provenance merge fix (`composeSkillFile`)
+- `75b44e4d8e` e.2.c — provenance merge fix (`composeSkillFile`)
 - e.3 — docs: `LEARNING_LOOP_SMOKE.md` (runbook) + ten RESUME refresh
 
 **Live smoke test PRZECHODZI** — learning loop udowodniony end-to-end: real
@@ -77,7 +77,7 @@ api_key provider; po nim 4.3.e i całe 4.3 zamknięte).
    wymaga `OPENCLAW_LIVE_USE_REAL_HOME=1` by widzieć real auth profiles.
 2. **Global OAuth mock** — `test/setup.shared.ts` mockuje `@earendil-works/pi-ai/oauth`
    dla wszystkich testów (zbadane; nie był blockerem).
-3. **Auth bridge gap** (`eeddcb0fe2`) — `runSkillReview` nie przekazywał
+3. **Auth bridge gap** (`79fe7cbf56`) — `runSkillReview` nie przekazywał
    `authStorage`/`modelRegistry` → pi-coding-agent czytał pusty `auth.json`
    → loop cicho zwracał empty reviews od 4.3.c.5.
 4. **accountId profile-specific** — pi-ai `getAccountId` dekoduje OAuth JWT
@@ -85,7 +85,7 @@ api_key provider; po nim 4.3.e i całe 4.3 zamknięte).
    login nie.
 5. **ChatGPT-account model availability** — Codex OAuth serwuje stały zestaw
    modeli; `gpt-5.1-codex-mini` odrzucony, użyty `gpt-5.4-mini`.
-6. **Provenance merge gap** (`802399b4b5`) — `skill_manage` odrzucał wygenerowany
+6. **Provenance merge gap** (`75b44e4d8e`) — `skill_manage` odrzucał wygenerowany
    frontmatter gdy model dostarczył własny → `agent_created` gubione.
 
 ### Side-effekty środowiska (z e.2.b diagnostyki)
@@ -108,9 +108,9 @@ api_key provider; po nim 4.3.e i całe 4.3 zamknięte).
 
 **4.3.d w toku — 3 z 5 podkroków zamknięte**:
 
-- `6ff6fe19ef` d.1 feat: inject createSession seam via SkillReviewDeps
-- `2fdbcd45e6` d.2 test: mock fixtures + 3 happy-path tests (empty, create, update)
-- `8579cfd0d6` d.3 test: 6 guardrail+defensive (G1, G2, G3, empty-name, missing-content, G7) + G5 deferred
+- `7468f5dd38` d.1 feat: inject createSession seam via SkillReviewDeps
+- `c291480b8f` d.2 test: mock fixtures + 3 happy-path tests (empty, create, update)
+- `c10c69db9e` d.3 test: 6 guardrail+defensive (G1, G2, G3, empty-name, missing-content, G7) + G5 deferred
 
 **Wyniki po d.3**: **238 passed | 2 skipped** (G5 timeout deferred do 4.3.e, jeden it.skip × 2 workspace projects = 2 skipped). tsgo `tsconfig.core.json` **0 errors**. Drzewo czyste.
 
@@ -156,7 +156,7 @@ api_key provider; po nim 4.3.e i całe 4.3 zamknięte).
 - "Unknown action" test DROPPED — `executeSkillReviewAction` switch nie ma default case (production defensive gap, nie nasz guardrail; testowanie pinowałoby bug).
 - G5 timeout DEFERRED do 4.3.e — szczegóły wyżej.
 
-**Push do remote**: `fork/learning-port` aktualnie na `2b67425ca3` (post-c.5.a, 25 commitów). Po push w tej sesji (d.1 + d.2 + d.3 + RESUME update commit) będzie **29 commitów** na fork.
+**Push do remote**: branch `fork/hermes-port` — **38 commitów** (etap 4.3 zamknięty, push wykonany).
 
 **TODO Etap 5** (kumulatywne, z 4.3.b, 4.3.c, 4.3.d):
 
@@ -187,7 +187,7 @@ Wszystkie pozostałe pre-existing TODO punkty zachowane w sekcjach poniżej.
 Etap 4.3 (real reviewFn) — krok **4.3.a UKOŃCZONY i scommitowany**.
 Następny krok: **4.3.b (runSkillReview z createAgentSession)**.
 
-Ostatni commit: `0cf5329607 feat(learning): skill_manage tool def for review fork + ReviewResult schema (Step 4.3.a)`
+Ostatni commit: `e983bcb532 feat(learning): skill_manage tool def for review fork + ReviewResult schema (Step 4.3.a)`
 Branch: `main` (10 commitów ponad `origin/main` — nic nie pushowane)
 
 ## Co już zrobione (chronologicznie)
@@ -294,7 +294,7 @@ Branch: `main` (10 commitów ponad `origin/main` — nic nie pushowane)
 
 **Call site reviewFn (HISTORYCZNE — wpięte w 4.3.c.5):**
 
-- `src/agents/pi-embedded-runner/run/attempt.ts` — `reviewFn` w `scheduleLearningReviewIfDue` woła **real `runSkillReview`** od commita `aabe3b5f58` (4.3.c.5). Od 4.3.e.2.a closure przekazuje też `authStorage` + `modelRegistry`. No-op mock z tej linii już nie istnieje.
+- `src/agents/pi-embedded-runner/run/attempt.ts` — `reviewFn` w `scheduleLearningReviewIfDue` woła **real `runSkillReview`** od commita `e9e55a22dd` (4.3.c.5). Od 4.3.e.2.a closure przekazuje też `authStorage` + `modelRegistry`. No-op mock z tej linii już nie istnieje.
 
 ## Stan testów
 
